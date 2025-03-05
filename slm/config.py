@@ -21,10 +21,10 @@ class ModelConfig:
     """
     def __init__(
         self,
-        hidden_size: int = 256,
+        hidden_size: int = 1024,
         num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
-        max_seq_len: int = 1024,
+        max_seq_len: int = 2048,
         use_rope: bool = True,
         use_wavelet: bool = False,
         wavelet_name: Optional[str] = None

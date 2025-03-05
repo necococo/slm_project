@@ -66,6 +66,13 @@ class Trainer:
             eps=1e-5  # epsilonを大きめに
         )
         
+        # 追加: CosineAnnealingLR スケジューラの初期化
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, 
+            T_max=self.training_config.mlm_epochs,  # ここは必要に応じて調整
+            eta_min=1e-6
+        )
+        
         # AMP用のGradScaler
         self.scaler = torch.amp.GradScaler('cuda') if (self.device.type == 'cuda' and self.training_config.use_amp) else None
         
@@ -126,6 +133,12 @@ class Trainer:
             self.writer.add_scalar("MLM/Epoch Loss", avg_loss, epoch)
             self.writer.add_scalar("MLM/Epoch Time (s)", epoch_time, epoch)
             
+            # エポック終了後にスケジューラを1ステップ進める
+            self.scheduler.step()
+            # 学習率を確認
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            print(f"Current LR after scheduler step: {current_lr:.8f}")
+            
             # Validation
             if self.valid_dataset:
                 val_loss = self.validate()
@@ -134,7 +147,7 @@ class Trainer:
             # チェックポイント
             if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
                 self.save_checkpoint(f"mlm_epoch_{epoch+1}")
-        
+
         total_time = time.time() - start_time
         self.writer.add_scalar("MLM/Total Training Time (min)", total_time / 60, 0)
         print(f"MLM training completed in {total_time / 60:.2f} minutes")
@@ -210,6 +223,9 @@ class Trainer:
             self.writer.add_scalar("Diffusion/Epoch Loss", avg_loss, epoch)
             self.writer.add_scalar("Diffusion/Epoch Time (s)", epoch_time, epoch)
             
+            # エポック終了後にスケジューラを1ステップ進める
+            self.scheduler.step()
+            
             if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
                 self.save_checkpoint(f"diffusion_epoch_{epoch+1}")
         
@@ -266,9 +282,10 @@ class Trainer:
                 labels = batch["labels"].to(self.device)
                 
                 embeddings = self.model(input_ids)
-                # DeBERTaなどは classifier が (vocab_size, hidden_dim) かもしれませんが、
-                # モデル次第で転置を行うかは要確認
                 classifier = self.model.get_classifier_weights()
+                # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+                embeddings = embeddings.half()
+                classifier = classifier.half()
                 loss = linear_cross_entropy(embeddings, classifier, labels)
                 total_loss += loss.item()
         
