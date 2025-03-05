@@ -89,9 +89,9 @@ def main():
                 return tokenizer(examples["text"]) # ここでは切り取りや穴埋めは行わず可変長のまま保存します。GPU環境でのtrain直前にdataloaderのcollatorが切り取りや穴埋めをするので長さを調整しながら学習の様子見ができます。
             
             print("Tokenizing dataset ...")
-            train_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
-            valid_dataset = valid_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
-            test_dataset = test_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+            train_dataset = train_dataset.map(tokenize_fn, batched=True, batch_size=1000, remove_columns=["text"])
+            valid_dataset = valid_dataset.map(tokenize_fn, batched=True, batch_size=1000, remove_columns=["text"])
+            test_dataset = test_dataset.map(tokenize_fn, batched=True, batch_size=1000, remove_columns=["text"])
             
             # 5) 保存
             print("前処理済みデータをディスクに保存します...")
