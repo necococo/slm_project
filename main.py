@@ -68,33 +68,36 @@ def main():
             dataset = load_dataset(paths_config.dataset_name, paths_config.dataset_subset)
             raw_train = dataset["train"]
             
-            # dev用に 0.1% だけsplit
-            split_data = raw_train.train_test_split(test_size=0.001, seed=42)
+            # 2) train/valid/test に分割（例: 98%/1%/1%）
+            print("データセットをtrain/valid/testに分割します...")
+            split_data = raw_train.train_test_split(test_size=0.02, seed=42)
             train_dataset = split_data["train"]
-            valid_dataset = split_data["test"]
+            temp_dataset = split_data["test"]
+            split_temp = temp_dataset.train_test_split(test_size=0.5, seed=42)
+            valid_dataset = split_temp["train"]
+            test_dataset = split_temp["test"]
             print(f"Train size: {len(train_dataset)}")
             print(f"Valid size: {len(valid_dataset)}")
+            print(f"Test size: {len(test_dataset)}")
             
-            # 2) Tokenizer
+            # 3) Tokenizer
             tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
             print("Tokenizer vocab_size:", len(tokenizer))
             
-            # 3) 前処理 (トークナイズ) 関数
+            # 4) 前処理 (トークナイズ) 関数
             def tokenize_fn(examples):
-                return tokenizer(examples["text"], 
-                                #  truncation=True, 
-                                #  max_length=model_config.max_seq_len
-                                 ) # 長さ調整やパディングは学習時にやります。ここでは“可変長のまま” 保存。
+                return tokenizer(examples["text"]) # ここでは切り取りや穴埋めは行わず可変長のまま保存します。GPU環境でのtrain直前にdataloaderのcollatorが切り取りや穴埋めをするので長さを調整しながら学習の様子見ができます。
             
-            print("Tokenizing train_dataset ...")
+            print("Tokenizing dataset ...")
             train_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
-            print("Tokenizing valid_dataset ...")
             valid_dataset = valid_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+            test_dataset = test_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
             
-            # 4) 保存
+            # 5) 保存
             print("前処理済みデータをディスクに保存します...")
             train_dataset.save_to_disk(os.path.join(paths_config.data_dir, "train_dataset"))
             valid_dataset.save_to_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
+            test_dataset.save_to_disk(os.path.join(paths_config.data_dir, "test_dataset"))
             
             print("=== 前処理完了。ランタイムをGPUに切り替えて再実行してください。 ===")
             sys.exit(0)
