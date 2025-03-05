@@ -84,7 +84,7 @@ def main():
                 return tokenizer(examples["text"], 
                                 #  truncation=True, 
                                 #  max_length=model_config.max_seq_len
-                                 )
+                                 ) # 長さ調整やパディングは学習時にやります。ここでは“可変長のまま” 保存。
             
             print("Tokenizing train_dataset ...")
             train_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])

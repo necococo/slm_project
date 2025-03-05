@@ -245,8 +245,9 @@ def main():
             # 3) 前処理 (トークナイズ) 関数
             def tokenize_fn(examples):
                 return tokenizer(examples["text"], 
-                                 truncation=True, 
-                                 max_length=model_config.max_seq_len)
+                                #  truncation=True, 
+                                #  max_length=model_config.max_seq_len
+                                 )
             
             print("Tokenizing train_dataset ...")
             train_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
@@ -321,6 +322,54 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+--- File: ./reset_git.sh ---
+#!/bin/bash
+
+# 現在のディレクトリを確認
+current_dir=$(pwd)
+echo "現在のディレクトリ: $current_dir"
+
+# リポジトリのルートディレクトリに移動
+cd /Users/kj/slm || { echo "Error: ディレクトリが存在しません"; exit 1; }
+
+# 現在のリポジトリをバックアップ
+backup_dir="../slm_backup_$(date +%Y%m%d%H%M%S)"
+echo "リポジトリをバックアップ: $backup_dir"
+cp -r . "$backup_dir"
+
+# Gitリポジトリを初期化
+echo "Gitリポジトリを初期化します..."
+rm -rf .git
+git init
+
+# .gitignoreファイルを作成
+cat > .gitignore << EOL
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.slm/
+
+.DS_Store
+
+all_code_combined.txt
+copilot_code_style.md
+EOL
+
+# すべてのファイルをステージング
+git add .
+
+# 初期コミット
+git commit -m "Initial commit: Wave Network Language Model"
+
+# 確認メッセージ
+echo "Gitリポジトリを初期化し、現在のコードベースを初期コミットとしました。"
+echo "リモートリポジトリを設定するには以下のようなコマンドを実行してください："
+echo "git remote add origin <repository-url>"
+echo "git push -u origin main"
+
 
 --- Directory: ./slm ---
 
@@ -433,21 +482,21 @@ class ModelConfig:
     """
     def __init__(
         self,
-        hidden_size: int = 256,
+        hidden_size: int = 1024,
         num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
-        max_seq_len: int = 1024,
-        use_wavelet: bool = False,
+        max_seq_len: int = 2048,
         use_rope: bool = True,
+        use_wavelet: bool = False,
         wavelet_name: Optional[str] = None
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self._vocab_size = vocab_size
         self.max_seq_len = max_seq_len
+        self.use_rope = use_rope
         self.use_wavelet = use_wavelet
         self.wavelet_name = wavelet_name
-        self.use_rope = use_rope
         self.tokenizer = None  # トークナイザーを後から設定可能に
     
     @property
@@ -480,8 +529,8 @@ class TrainingConfig:
     """
     def __init__(
         self,
-        learning_rate: float = 1e-4,
-        batch_size: int = 32,
+        learning_rate: float = 1e-5, # 1e-4だと数値が不安定になりロスにnanがでる
+        batch_size: int = 24,
         mlm_epochs: int = 3,
         diffusion_epochs: int = 0,
         weight_decay: float = 0.01,
@@ -571,46 +620,42 @@ ipadic
 unidic-lite
 
 --- File: ./slm/collator.py ---
-#############################################################################
-# カスタム Collator をここに置く (もしくは別ファイルに置く)
-# T5 や BERT系など tokenizer.sp が無い場合が多いので、mask_token_id に注意
-#############################################################################
+# filename: collator.py
+
 from typing import Dict, Optional, Tuple, Union
 import torch
 
-
 class CustomCollator:
     """
-    カスタムコレーター (DataLoaderのcollate_fn用)
-    - mlm: Trueならマスク適用
-    - qa:  TrueならQAラベル処理
-    - tokenizer: HFトークナイザ
+    How:
+        - トークン列を DataLoader から受け取り、最大シーケンス長 (config.ModelConfig.max_seq_len)
+          を超えるものはトリミング、満たない場合はパディングする。
+        - MLM の場合はマスク処理を行う。
+        - QA タスクの場合はQAラベルを処理する（今回省略）。
     """
     def __init__(
         self,
         tokenizer,
+        model_config,  # ModelConfig を渡す
         mlm: bool = False,
         mlm_probability: float = 0.15,
         mask_token_id: Optional[int] = None,
         qa: bool = False
     ):
         self.tokenizer = tokenizer
+        self.model_config = model_config
         self.mlm = mlm
         self.mlm_probability = mlm_probability
         self.qa = qa
 
-        # tokenizer.mask_token_id が None の場合は [MASK] が存在しない可能性がある
-        # => tokenizer.convert_tokens_to_ids("[MASK]") を試す or fallback
         if mask_token_id is not None:
             self.mask_token_id = mask_token_id
         else:
             if tokenizer.mask_token_id is not None:
                 self.mask_token_id = tokenizer.mask_token_id
             else:
-                # fallback: convert_tokens_to_ids
                 tmp_id = tokenizer.convert_tokens_to_ids("[MASK]")
                 if tmp_id == tokenizer.unk_token_id:
-                    # [MASK]が辞書に無い、警告
                     print("[WARNING] [MASK] is not in the vocab. Using unk_token_id as mask.")
                     self.mask_token_id = tokenizer.unk_token_id
                 else:
@@ -618,38 +663,44 @@ class CustomCollator:
 
     def __call__(self, batch):
         """
-        batch: list of dict => { 'input_ids': [...], 'attention_mask': [...], ... } 
+        How:
+            - batch(list[dict]) から input_ids / labels を取り出し、
+              ModelConfig.max_seq_len でトリミング or パディング。
+            - mlm=True の場合は確率的にマスクトークンに置換し、labelsを-100で埋める。
         """
-        # 1) input_ids 等を gather
+        # Why not: バッチ内で統一的に max_seq_len を取得して使う
+        max_len = self.model_config.max_seq_len
+        
         input_ids_list = []
-        labels_list = []
-
+        
         for sample in batch:
+            # 取り出し
             input_ids = sample["input_ids"]
-            # attention_mask = sample.get("attention_mask", [1]*len(input_ids)) # 使わないなら割愛
-            input_ids_list.append(input_ids)
-            # labels (MLMで使うので input_idsコピーをベースに後でマスク処理)
-            labels_list.append(input_ids)
+            # QAなどがある場合は別の処理かもしれないが、とりあえず同様にラベル扱い
+            
+            # 1) トリミング
+            if len(input_ids) > max_len:
+                input_ids = input_ids[:max_len]
 
+            input_ids_list.append(input_ids)
+        
         # 2) パディング
-        max_len = max(len(ids) for ids in input_ids_list)
+        #   バッチ内の max_len は model_config.max_seq_len と固定
         for i in range(len(input_ids_list)):
             diff = max_len - len(input_ids_list[i])
-            input_ids_list[i] = input_ids_list[i] + [self.tokenizer.pad_token_id]*diff
-            labels_list[i]    = labels_list[i]    + [ -100 ]*diff  # ここでは適当に-100埋め
+            if diff > 0:
+                # 短い場合はパディング
+                input_ids_list[i] += [self.tokenizer.pad_token_id] * diff
 
+        # list -> tensor
         input_ids_batch = torch.tensor(input_ids_list, dtype=torch.long)
-        labels_batch = torch.tensor(labels_list,  dtype=torch.long)
+        labels_batch = input_ids_batch.clone()
 
-        # 3) MLMマスク処理
-        # => if self.mlm: 
+        # 3) MLMマスク処理（mlm=True のときだけ）
         if self.mlm:
-            # 15%をmask_token_id に置き換え
             probability_matrix = torch.full(labels_batch.shape, self.mlm_probability)
-            # special tokens はマスク対象外 (CLS, SEP, PAD, etc)
-            # 例:
             special_ids = set([
-                self.tokenizer.cls_token_id, 
+                self.tokenizer.cls_token_id,
                 self.tokenizer.sep_token_id,
                 self.tokenizer.unk_token_id,
                 self.tokenizer.pad_token_id
@@ -658,17 +709,13 @@ class CustomCollator:
             for s_id in special_ids:
                 mask_arr &= (input_ids_batch != s_id)
             
-            # input_idsを mask_token_id に置換
             input_ids_batch[mask_arr] = self.mask_token_id
-            # マスクしなかった部分を -100
             labels_batch[~mask_arr] = -100
 
         return {
             "input_ids": input_ids_batch,
             "labels": labels_batch
         }
-
-
 
 --- File: ./slm/evaluation.py ---
 # slm/evaluation.py
@@ -896,64 +943,64 @@ greedy_decode() は非常に単純な実装です。本格的にやるなら tra
 """
 
 --- File: ./slm/data_loader.py ---
-# data_loader.py
-import os
-from typing import Optional, Dict, Any, Tuple, Union
-from datasets import load_dataset, Dataset, DatasetDict
-from transformers import AutoTokenizer
+# # data_loader.py
+# import os
+# from typing import Optional, Dict, Any, Tuple, Union
+# from datasets import load_dataset, Dataset, DatasetDict
+# from transformers import AutoTokenizer
 
-def tokenize_fn(example: Dict[str, Any], tokenizer, max_len: int) -> Dict[str, Any]:
-    """
-    How:
-        - QAの場合は question + context + answers をまとめる
-        - なければ example["text"] を使う
-        - Hugging FaceトークナイザでMLM用に 'input_ids','attention_mask','labels'を作る
-          (labelsは別途collatorで設定可能なので、ここではinput_idsだけでもよい)
-    """
-    if "question" in example and "context" in example and "answers" in example:
-        text = f"質問: {example['question']} 文脈: {example['context']} 答え: {example['answers']['text'][0]}"
-    elif "text" in example:
-        text = example["text"]
-    else:
-        text = str(example)
+# def tokenize_fn(example: Dict[str, Any], tokenizer, max_len: int) -> Dict[str, Any]:
+#     """
+#     How:
+#         - QAの場合は question + context + answers をまとめる
+#         - なければ example["text"] を使う
+#         - Hugging FaceトークナイザでMLM用に 'input_ids','attention_mask','labels'を作る
+#           (labelsは別途collatorで設定可能なので、ここではinput_idsだけでもよい)
+#     """
+#     if "question" in example and "context" in example and "answers" in example:
+#         text = f"質問: {example['question']} 文脈: {example['context']} 答え: {example['answers']['text'][0]}"
+#     elif "text" in example:
+#         text = example["text"]
+#     else:
+#         text = str(example)
 
-    # トークナイザ呼び出し
-    encoded = tokenizer(
-        text,
-        truncation=True,
-        max_length=max_len,
-        # special_tokens => [CLS], [SEP] など自動付与
-        return_special_tokens_mask=True
-    )
-    return encoded
+#     # トークナイザ呼び出し
+#     encoded = tokenizer(
+#         text,
+#         truncation=True,
+#         max_length=max_len,
+#         # special_tokens => [CLS], [SEP] など自動付与
+#         return_special_tokens_mask=True
+#     )
+#     return encoded
 
 
-def load_preprocessed_dataset(
-    dataset_name: str,
-    dataset_subset: Optional[str],
-    cache_dir: str,
-    tokenizer,
-    max_len: int = 512
-) -> Tuple[Union[Dataset, None], Union[Dataset, None]]:
-    """
-    1. Hugging Faceからデータセットをロード
-    2. map(tokenize_fn) で前処理
-    3. train/validationを取り出して返す
-    """
-    print(f"=== データセット {dataset_name}/{dataset_subset} をロード＆前処理 ===")
-    ds = load_dataset(dataset_name, dataset_subset, cache_dir=cache_dir)
+# def load_preprocessed_dataset(
+#     dataset_name: str,
+#     dataset_subset: Optional[str],
+#     cache_dir: str,
+#     tokenizer,
+#     max_len: int = 512
+# ) -> Tuple[Union[Dataset, None], Union[Dataset, None]]:
+#     """
+#     1. Hugging Faceからデータセットをロード
+#     2. map(tokenize_fn) で前処理
+#     3. train/validationを取り出して返す
+#     """
+#     print(f"=== データセット {dataset_name}/{dataset_subset} をロード＆前処理 ===")
+#     ds = load_dataset(dataset_name, dataset_subset, cache_dir=cache_dir)
 
-    ds = ds.map(lambda ex: tokenize_fn(ex, tokenizer, max_len), batched=False)
+#     ds = ds.map(lambda ex: tokenize_fn(ex, tokenizer, max_len), batched=False)
 
-    # train/validation 分割を探す
-    if isinstance(ds, dict):  # DatasetDict
-        train_ds = ds.get("train", None)
-        valid_ds = ds.get("validation", ds.get("dev", None))
-    else:
-        train_ds = ds
-        valid_ds = None
+#     # train/validation 分割を探す
+#     if isinstance(ds, dict):  # DatasetDict
+#         train_ds = ds.get("train", None)
+#         valid_ds = ds.get("validation", ds.get("dev", None))
+#     else:
+#         train_ds = ds
+#         valid_ds = None
 
-    return train_ds, valid_ds
+#     return train_ds, valid_ds
 
 
 
@@ -1673,7 +1720,6 @@ from typing import Dict, Optional, Tuple, Union
 
 from .config import ModelConfig, TrainingConfig, PathsConfig
 from .model import WaveNetworkLM
-# cut-cross-entropyパッケージを使用
 from cut_cross_entropy import linear_cross_entropy
 from .diffusion import SimpleTextDiffusion
 from .utils import get_model_size, compute_flops_per_batch
@@ -1685,12 +1731,6 @@ class Trainer:
     How:
         Wave Networkモデルの訓練を実行するトレーナークラス。
         TensorBoardを使った学習過程のモニタリングと、複数の学習フェーズ管理を行います。
-
-    実装詳細:
-        1. MLM学習とDiffusionベースのFine-tuningをサポート
-        2. TensorBoardによるメトリクス追跡（損失、学習率、計算量など）
-        3. チェックポイント管理と保存
-        4. Google ColabでのA100 GPU訓練に最適化
     """
 
     def __init__(
@@ -1708,65 +1748,75 @@ class Trainer:
         self.training_config = training_config or TrainingConfig()
         self.paths_config = paths_config or PathsConfig()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # モデルを通常のfloat32のままGPUへ (model.half()はしない)
         self.model.to(self.device)
 
-        # 追加: 全パラメータをfp16へ
-        if self.device.type == "cuda":
-            self.model.half()
-
-        # ディレクトリの作成
+        # ディレクトリ準備
         os.makedirs(self.paths_config.log_dir, exist_ok=True)
         os.makedirs(self.paths_config.checkpoint_dir, exist_ok=True)
         self.log_dir = self.paths_config.log_dir
         self.checkpoint_dir = self.paths_config.checkpoint_dir
         
-        # TensorBoard用のSummaryWriter
+        # TensorBoard
         self.writer = SummaryWriter(log_dir=self.paths_config.log_dir)
         
-        # 最適化関連
+        # 学習率調整（NaN対策に小さめ）
+        learning_rate = self.training_config.learning_rate
+        if learning_rate > 1e-5:
+            print(f"WARNING: Lowering learning rate from {learning_rate} to 1e-5 for stability")
+            learning_rate = 1e-5
+
+        # Optimizer
         self.optimizer = optim.Adam(
             self.model.parameters(), 
-            lr=self.training_config.learning_rate
+            lr=learning_rate,
+            eps=1e-5  # epsilonを大きめに
         )
         
-        # モデル情報ログ出力
+        # 追加: CosineAnnealingLR スケジューラの初期化
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, 
+            T_max=self.training_config.mlm_epochs,  # ここは必要に応じて調整
+            eta_min=1e-6
+        )
+        
+        # AMP用のGradScaler
+        self.scaler = torch.amp.GradScaler('cuda') if (self.device.type == 'cuda' and self.training_config.use_amp) else None
+        
         self._log_model_info()
         
     def _log_model_info(self):
-        """モデルサイズ、構成パラメータなどをログ"""
+        """モデルサイズなどをログ"""
         model_size = get_model_size(self.model)
         print(f"Model initialized with {model_size / 1e6:.2f}M parameters")
         print(f"Training on device: {self.device}")
-        
+
     def train_mlm(self, num_epochs: Optional[int] = None) -> None:
         """
-        How:
-            MLM（Masked Language Model）方式で学習を実行します。
-            進捗とメトリクスをTensorBoardに記録します。
-            
-        Args:
-            num_epochs: 学習エポック数、Noneの場合はconfigから取得
+        MLM（Masked Language Model）方式で学習を実行
         """
         epochs = num_epochs or self.training_config.mlm_epochs
         
-        # トークナイザーの取得
-        tokenizer = self.model.config.tokenizer if hasattr(self.model.config, 'tokenizer') else None
+        tokenizer = self.model.config.tokenizer
         if tokenizer is None:
-            raise ValueError("model.config.tokenizerが設定されていません。モデル初期化前にモデル設定にトークナイザーを設定してください。")
-        
-        # CustomCollatorを初期化
+            raise ValueError("model.config.tokenizerが設定されていません。")
+
+        # Collator
         collator = CustomCollator(
             tokenizer=tokenizer,
+            model_config=self.model.config,
             mlm=True,
             mlm_probability=0.15,
-            mask_token_id = tokenizer.mask_token_id
+            mask_token_id=tokenizer.mask_token_id,
+            qa=False
         )
         
         dataloader = DataLoader(
-            self.train_dataset, 
-            batch_size=self.training_config.batch_size, 
+            self.train_dataset,
+            batch_size=self.training_config.batch_size,
             shuffle=True,
-            collate_fn=collator  # ここでcollatorを使用
+            collate_fn=collator
         )
         
         total_steps = 0
@@ -1781,81 +1831,109 @@ class Trainer:
                 epoch_loss += step_loss
                 total_steps += 1
                 
-                # 進捗表示
                 if batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}/{epochs} | Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
             
             # エポック統計
-            epoch_time = time.time() - epoch_start_time
             avg_loss = epoch_loss / len(dataloader)
-            
-            # TensorBoard
+            epoch_time = time.time() - epoch_start_time
+            print(f"Epoch {epoch+1}/{epochs} | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
             self.writer.add_scalar("MLM/Epoch Loss", avg_loss, epoch)
             self.writer.add_scalar("MLM/Epoch Time (s)", epoch_time, epoch)
             
-            print(f"Epoch {epoch+1}/{epochs} completed | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
+            # エポック終了後にスケジューラを1ステップ進める
+            self.scheduler.step()
+            # 学習率を確認
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            print(f"Current LR after scheduler step: {current_lr:.8f}")
             
             # Validation
             if self.valid_dataset:
                 val_loss = self.validate()
                 self.writer.add_scalar("MLM/Validation Loss", val_loss, epoch)
             
-            # チェックポイント保存
+            # チェックポイント
             if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
                 self.save_checkpoint(f"mlm_epoch_{epoch+1}")
-        
+
         total_time = time.time() - start_time
         self.writer.add_scalar("MLM/Total Training Time (min)", total_time / 60, 0)
         print(f"MLM training completed in {total_time / 60:.2f} minutes")
+
+    def _mlm_train_step(self, batch: Dict[str, torch.Tensor], step: int) -> float:
+        self.model.train()
+        input_ids = batch["input_ids"].to(self.device)
+        labels = batch["labels"].to(self.device)
+
+        self.optimizer.zero_grad()
+
+        # forward
+        embeddings = self.model(input_ids)  # => float32計算 + wave => 最終 .half()
+        classifier = self.model.get_classifier_weights()  # => (V, D) float32かもしれないが...
+
+        # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+        embeddings = embeddings.half()
+        classifier = classifier.half()
+
+        loss = linear_cross_entropy(embeddings, classifier, labels)
+        loss.backward()
+        self.optimizer.step()
+            
+        # ログ
+        if step % 5 == 0:
+            compute_time = 0.0  # 実測したい場合は time計測をどうぞ
+            self.writer.add_scalar("MLM/Loss", loss.item(), step)
+            self.writer.add_scalar("MLM/ComputeTime(ms)", compute_time * 1000, step)
+            if torch.cuda.is_available():
+                self.writer.add_scalar("System/GPU Memory (MB)", torch.cuda.memory_allocated()/1e6, step)
+            est_flops = compute_flops_per_batch(self.model, input_ids.shape)
+            self.writer.add_scalar("System/Estimated TFLOPS", est_flops/1e12/(compute_time+1e-9), step)
         
+        return loss.item()
+
     def train_diffusion(self, num_epochs: Optional[int] = None) -> None:
         """
-        拡散モデル方式でFine-tuning。
+        拡散モデル方式でFine-tuning
         """
         epochs = num_epochs or self.training_config.diffusion_epochs
         if epochs == 0:
             print("Diffusion epochs = 0, skipping diffusion training")
             return
 
-        # vocab_size
-        vocab_size = None
-        if hasattr(self.model, 'get_classifier_weights'):
-            vocab_size = self.model.get_classifier_weights().size(0)
-            
+        vocab_size = self.model.get_classifier_weights().size(0)
         diffuser = SimpleTextDiffusion(timesteps=20, mask_token_id=4, vocab_size=vocab_size).to(self.device)
+        
         dataloader = DataLoader(
-            self.train_dataset, 
-            batch_size=self.training_config.batch_size, 
+            self.train_dataset,
+            batch_size=self.training_config.batch_size,
             shuffle=True
         )
         
         total_steps = 0
         start_time = time.time()
-        
+
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
             
             for batch_idx, batch in enumerate(dataloader):
-                # ランダムなタイムステップtを選択
                 t = torch.randint(0, diffuser.timesteps, (1,)).item()
                 step_loss = self._diffusion_train_step(batch, diffuser, t, total_steps)
                 epoch_loss += step_loss
                 total_steps += 1
-                
+
                 if batch_idx % 10 == 0:
                     print(f"Diffusion Epoch {epoch+1}/{epochs} | Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
-            
-            # epoch統計
-            epoch_time = time.time() - epoch_start_time
+
             avg_loss = epoch_loss / len(dataloader)
-            
+            epoch_time = time.time() - epoch_start_time
+            print(f"Diffusion Epoch {epoch+1}/{epochs} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
             self.writer.add_scalar("Diffusion/Epoch Loss", avg_loss, epoch)
             self.writer.add_scalar("Diffusion/Epoch Time (s)", epoch_time, epoch)
             
-            print(f"Diffusion Epoch {epoch+1}/{epochs} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
+            # エポック終了後にスケジューラを1ステップ進める
+            self.scheduler.step()
             
-            # チェックポイント
             if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
                 self.save_checkpoint(f"diffusion_epoch_{epoch+1}")
         
@@ -1863,114 +1941,45 @@ class Trainer:
         self.writer.add_scalar("Diffusion/Total Training Time (min)", total_time / 60, 0)
         print(f"Diffusion training done in {total_time / 60:.2f} minutes")
 
-    def _mlm_train_step(self, batch: Dict[str, torch.Tensor], step: int) -> float:
-        """単一のMLM学習ステップを実行します"""
-        self.model.train()
-        input_ids = batch["input_ids"].to(self.device)
-        labels = batch["labels"].to(self.device)
-        
-        start_time = time.time()
-        self.optimizer.zero_grad()
-        
-        # まずオプションでampautocastを無効化
-        # with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-        
-        # モデルからembeddingsとclassifier weightsを取得
-        embeddings = self.model(input_ids)
-        classifier = self.model.get_classifier_weights()
-        
-        # デバッグ情報を出力
-        print(f"Embeddings dtype before conversion: {embeddings.dtype}")
-        
-        # 明示的に強制的にfp16に変換 (clone()を使ってより確実に)
-        embeddings = embeddings.clone().to(torch.float16)
-        classifier = classifier.clone().to(torch.float16)
-        
-        # デバッグ確認
-        print(f"Embeddings dtype after conversion: {embeddings.dtype}")
-        
-        # 型変換の確認のため、形状も出力
-        print(f"Embeddings shape: {embeddings.shape}, Classifier shape: {classifier.shape}")
-        
-        try:
-            # 損失計算
-            loss = linear_cross_entropy(embeddings, classifier, labels)
-            loss.backward()
-        except Exception as e:
-            # エラー情報を詳細に表示
-            print(f"Error in loss calculation: {e}")
-            print(f"Embeddings dtype: {embeddings.dtype}, device: {embeddings.device}")
-            print(f"Classifier dtype: {classifier.dtype}, device: {classifier.device}")
-            print(f"Labels dtype: {labels.dtype}, device: {labels.device}")
-            print(f"-----------------")
-            print(f"Embeddings[0]: {embeddings[0]}")
-            print(f"Classifier[0]: {classifier[0]}")
-            print(f"Labels[0]: {labels[0]}")
-
-            raise e
-            
-        self.optimizer.step()
-        
-        compute_time = time.time() - start_time
-        
-        # TensorBoardに学習メトリクスを記録
-        if step % 5 == 0:  # 5ステップごとに記録（頻度は調整可能）
-            self.writer.add_scalar("MLM/Loss", loss.item(), step)
-            self.writer.add_scalar("MLM/ComputeTime(ms)", compute_time*1000, step)
-            if torch.cuda.is_available():
-                self.writer.add_scalar("System/GPU Memory (MB)", torch.cuda.memory_allocated()/1e6, step)
-            est_flops = compute_flops_per_batch(self.model, input_ids.shape)
-            self.writer.add_scalar("System/Estimated TFLOPS", est_flops/1e12/compute_time, step)
-        
-        return loss.item()
-
     def _diffusion_train_step(self, batch: Dict[str, torch.Tensor], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
-        """diffusion学習1step"""
         self.model.train()
         input_ids = batch["input_ids"].to(self.device)
         labels = batch["labels"].to(self.device)
         
-        start_time = time.time()
         self.optimizer.zero_grad()
         
-        # 新API: torch.amp.autocast('cuda') を使用
-        with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-            embeddings = diffuser(self.model, input_ids, t)
-            classifier = diffuser.get_classifier_weights()
+        if self.scaler is not None:
+            with torch.cuda.amp.autocast():
+                embeddings = self.model(input_ids)
+                classifier = self.model.get_classifier_weights()
+                # ここで diffuser を使った計算が必要なら適宜足す
+                loss = linear_cross_entropy(embeddings, classifier, labels)
             
-            # 明示的に型変換を強制
-            embeddings = embeddings.to(torch.float16)
-            classifier = classifier.to(torch.float16)
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            embeddings = self.model(input_ids)
+            classifier = self.model.get_classifier_weights()
+            loss = linear_cross_entropy(embeddings, classifier, labels)
             
-            loss = linear_cross_entropy(
-                embeddings.view(-1, embeddings.size(-1)),
-                classifier,
-                labels.view(-1)
-            )
-            
-        loss.backward()
-        self.optimizer.step()
-        
-        compute_time = time.time() - start_time
+            loss.backward()
+            self.optimizer.step()
         
         if step % 5 == 0:
             self.writer.add_scalar("Diffusion/Loss", loss.item(), step)
-            self.writer.add_scalar("Diffusion/ComputeTime(ms)", compute_time*1000, step)
             self.writer.add_scalar("Diffusion/Timestep", t, step)
         
         return loss.item()
 
     def validate(self) -> float:
-        """
-        Validation
-        """
         if not self.valid_dataset:
             return 0.0
-            
         self.model.eval()
+        
         dataloader = DataLoader(
-            self.valid_dataset, 
-            batch_size=self.training_config.batch_size, 
+            self.valid_dataset,
+            batch_size=self.training_config.batch_size,
             shuffle=False
         )
         
@@ -1981,37 +1990,33 @@ class Trainer:
                 labels = batch["labels"].to(self.device)
                 
                 embeddings = self.model(input_ids)
-                classifier = self.model.get_classifier_weights().t()
+                classifier = self.model.get_classifier_weights()
+                # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+                embeddings = embeddings.half()
+                classifier = classifier.half()
                 loss = linear_cross_entropy(embeddings, classifier, labels)
                 total_loss += loss.item()
         
         avg_loss = total_loss / len(dataloader)
         print(f"Validation Loss: {avg_loss:.4f}")
         return avg_loss
-        
+
     def save_checkpoint(self, name: str) -> None:
-        """
-        モデルのチェックポイントを保存
-        """
         checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
         checkpoint = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "model_config": self.model.config,
         }
-        
         torch.save(checkpoint, checkpoint_path)
         print(f"Checkpoint saved to {checkpoint_path}")
-        
+
     def load_checkpoint(self, path: str) -> None:
-        """
-        復元
-        """
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         print(f"Model loaded from {path}")
-        
+
     def close(self) -> None:
         self.writer.close()
         print("TensorBoard writer closed and resources released")
@@ -2019,57 +2024,46 @@ class Trainer:
 --- Directory: ./slm/modules ---
 
 --- File: ./slm/modules/wavelayer.py ---
+# wavelayer.py
+
 from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from slm.config import ModelConfig
 
-
-def compute_global_amplitude(x: torch.Tensor) -> torch.Tensor:
-    """
-    How:
-        シーケンス全体のエンベディング x (B,S,D) を用いて、
-        グローバルベクトル G (B,D) を求める。
-        G_k = sqrt( sum_{j=1 to S} x_{j,k}^2 )
-    """
-    return torch.sqrt(torch.sum(x * x, dim=1) + 1e-8)
-
-
 def to_wave_representation(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     How:
-        x (B,S,D) -> ratio = x / G -> alpha = atan2(...) -> (real, imag)
+        x (B,S,D) -> float32で安全に波形変換 => ratio => alpha => (real, imag)
+        最終的には戻り値も float32 で返す（呼び出し側で必要に応じて .half() する）。
     """
-    B, S, D = x.shape
-    G = compute_global_amplitude(x)  # (B,D)
-    G_exp = G.unsqueeze(1).expand(-1, S, -1)
-    ratio = x / (G_exp + 1e-8)
+    # Wave計算だけ float32
+    x_32 = x.float()
 
-    ratio_clamped = torch.clamp(ratio, -1.0, 1.0)
+    B, S, D = x_32.shape
+    EPS = 1e-5
+    
+    # グローバル振幅
+    G = torch.sqrt(torch.sum(x_32 * x_32, dim=1) + EPS)  # (B,D)
+    G_exp = G.unsqueeze(1).expand(-1, S, -1)  # (B,S,D)
+    G_safe = torch.clamp(G_exp, min=EPS)
+    
+    ratio = x_32 / G_safe
+    ratio_clamped = torch.clamp(ratio, -0.99, 0.99)
+    
     inside = 1.0 - ratio_clamped**2
-    inside = F.relu(inside)
+    # 負値を ReLU でつぶし + EPS
+    inside = F.relu(inside) + EPS
 
     alpha = torch.atan2(torch.sqrt(inside), ratio_clamped)
-    real_part = G_exp * torch.cos(alpha)
-    imag_part = G_exp * torch.sin(alpha)
-    return real_part, imag_part
+    real_part = G_safe * torch.cos(alpha)
+    imag_part = G_safe * torch.sin(alpha)
+    
+    return real_part, imag_part  # float32
 
 
 class SingleWaveLayer(nn.Module):
-    """
-    How:
-        図6(a) の “Single layer of Wave network” 相当の処理を担当。
-        順序:
-          1) sentence-level wave rep & input-level wave rep
-          2) wave superposition (干渉: 加算)
-          3) FeedForward & Norm
-          4) Overlay (Restore to word embedding) + residual + dropout
-
-        use_rope: このレイヤでは RoPE は扱わず、前段のEmbedding後に1回だけRoPEする方針。
-                  もし論文の都合で各レイヤにもRoPEするなら実装を追加。
-    """
-
     def __init__(
         self,
         hidden_size: int,
@@ -2078,12 +2072,7 @@ class SingleWaveLayer(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
 
-        # wave superposition用
-        # 干渉: (real_a + real_b), (imag_a + imag_b)
-        # ここでは linear演算など省略し、単純加算だけに
-        # => もし必要なら linear_a, linear_b 用意しても良い
-
-        # FeedForward & Norm
+        # FeedForward
         self.ffn = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size * 4),
             nn.ReLU(),
@@ -2091,9 +2080,7 @@ class SingleWaveLayer(nn.Module):
         )
         self.ffn_norm = nn.LayerNorm(hidden_size * 2)
 
-        # Overlay => restore + residual + dropout
-        # restoreは (B,S,2D)->(B,S,D) かもしれないが、ここでは論文図では
-        # "word embeddingと同次元" と描かれているので hidden_size でOK
+        # restore => (B,S,2D)->(B,S,D)
         self.restore_linear = nn.Linear(hidden_size * 2, hidden_size)
         self.overlay_dropout = nn.Dropout(dropout_prob)
         self.overlay_norm = nn.LayerNorm(hidden_size)
@@ -2104,71 +2091,61 @@ class SingleWaveLayer(nn.Module):
     ) -> torch.Tensor:
         """
         How:
-            x_embedding: (B,S,D) 実ベクトル
-              => 1) sentence-level wave rep
-                 2) input-level wave rep
-                 3) 干渉 (加算)
-                 4) feedforward & norm
-                 5) overlay => restore => residual => dropout => norm
-            最終出力: (B,S,D) (word embedding次元に戻る)
+            - Wave変換を安全にfloat32で実行
+            - 最終的な出力を .half() して返す
         """
         B, S, D = x_embedding.shape
+        EPS = 1e-5
+        
+        # NaNチェック & float32化
+        x_float = x_embedding.float()
+        if torch.isnan(x_float).any():
+            print("WARNING: NaN detected in layer input, replacing with 0.0")
+            x_float = torch.nan_to_num(x_float, nan=0.0)
 
-        #  "文全体に1つ" というなら (B,) が欲しい
-        G_sen_scalar = torch.sqrt(torch.sum(x_embedding * x_embedding, dim=(1,2)) + 1e-8)         
-        # これを (B,1,1) にして expand
-        G_sen_expanded = G_sen_scalar.view(B,1,1).expand(-1,S,D)  # (B,S,D)
-
-        ratio_sen = x_embedding / G_sen_expanded
-        ratio_sen = torch.clamp(ratio_sen, -1.0, 1.0)
-        inside_sen = 1.0 - ratio_sen**2
-        inside_sen = F.relu(inside_sen)
+        # 1) 文レベルwave
+        G_sen_scalar = torch.sqrt(torch.sum(x_float * x_float, dim=(1,2)) + EPS)
+        G_sen_expanded = G_sen_scalar.view(B,1,1).expand(-1,S,D)
+        G_sen_safe = torch.clamp(G_sen_expanded, min=EPS)
+        
+        ratio_sen = torch.clamp(x_float / G_sen_safe, -0.99, 0.99)
+        inside_sen = F.relu(1.0 - ratio_sen**2) + EPS
         alpha_sen = torch.atan2(torch.sqrt(inside_sen), ratio_sen)
-        real_sen = G_sen_expanded * torch.cos(alpha_sen)
-        imag_sen = G_sen_expanded * torch.sin(alpha_sen)
+        real_sen = G_sen_safe * torch.cos(alpha_sen)
+        imag_sen = G_sen_safe * torch.sin(alpha_sen)
 
-        # 2) input-level wave
-        real_in, imag_in = to_wave_representation(x_embedding)  # (B,S,D)
+        # 2) 入力wave
+        real_in, imag_in = to_wave_representation(x_float)  # float32
 
-        # 3) wave superposition => 干渉 (加算)
+        # 3) 干渉 (加算)
         out_real = real_sen + real_in
         out_imag = imag_sen + imag_in
 
-        # wave再正規化 => (B,S,2D)
-        amplitude = torch.sqrt(out_real**2 + out_imag**2 + 1e-8)
-        sign = torch.sign(out_real + 1e-9)
+        # amplitude
+        amplitude = torch.sqrt(out_real**2 + out_imag**2 + EPS)
+        sign = torch.sign(out_real + EPS)
         w_recon = amplitude * sign
 
-        # ふたたび wave表現
+        # 再wave
         real_w, imag_w = to_wave_representation(w_recon)
+
+        # cat
         wave_cat = torch.cat([real_w, imag_w], dim=-1)  # (B,S,2D)
 
-        # 4) feedforward & norm (図6(a) 上部 "Feed Forward & Norm")
+        # 4) FF + norm
         ff_out = self.ffn(wave_cat)
-        wave_cat = self.ffn_norm(wave_cat + ff_out)  # skip connection
+        wave_cat = self.ffn_norm(wave_cat + ff_out)
 
-        # 5) single wave overlay => restore to word embedding => residual => dropout => norm
-        #   restore: (B,S,2D)->(B,S,D)
-        overlay_in = wave_cat
-        restored = self.restore_linear(overlay_in)  # (B,S,D)
-
-        # residual + dropout + norm
-        #   "residual" は (overlay_in か x_embedding?) => 図6(b)では
-        #   wave overlay 直前のベクトルと overlay後を加算すると解釈
-        #   ここでは (restored + x_embedding) もアリだが論文図は
-        #   feedforward後の wave_cat を  “Single wave overlay” で扱っている
-        #   => どちらをresidualにするかは解釈次第
-        #   => ひとまず feedforward後の wave_cat をresとする
-
-        overlay_out = restored + overlay_in[..., :self.hidden_size]  # 例: wave_cat[:,:,:D]
-        # Why not: wave_catが(2D)あるが "Restore to word embedding" は D。
-        #          ここをどう合わせるかは論文依存。
-        #          ここでは wave_cat[:,:,:D] と比較して residual加算する。
+        # 5) restore => residual => dropout => norm
+        restored = self.restore_linear(wave_cat)  # (B,S,D)
+        # overlay: wave_cat の最初の D を residualとみなす例
+        overlay_out = restored + wave_cat[..., :D]
 
         overlay_out = self.overlay_dropout(overlay_out)
         overlay_out = self.overlay_norm(overlay_out)
 
-        return overlay_out  # (B,S,D)
+        # 最終的に half() で返す (cut_cross_entropy用)
+        return overlay_out.half()
 
 --- File: ./slm/modules/wavelet.py ---
 import torch
