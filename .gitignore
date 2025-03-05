@@ -1,0 +1,11 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.slm/
+
+.DS_Store
+
+all_code_combined.txt
+copilot_code_style.md

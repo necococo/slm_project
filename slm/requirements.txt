@@ -1,0 +1,11 @@
+sentencepiece
+pywavelets
+datasets
+huggingface_hub
+pytest
+cut-cross-entropy
+transformers
+bitsandbytes
+fugashi
+ipadic
+unidic-lite
