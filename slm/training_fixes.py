@@ -82,8 +82,11 @@ def initialize_wave_params(module):
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.Embedding):
         nn.init.normal_(module.weight, mean=0.0, std=0.01)
-    elif isinstance(module, (nn.LayerNorm, RMSNorm)):
+    elif isinstance(module, nn.LayerNorm):
         nn.init.ones_(module.weight)
+    elif isinstance(module, RMSNorm):
+        # RMSNormでは重みパラメータの名前が'scale'
+        nn.init.ones_(module.scale)
 
 def gradient_checkpointing_enable(model):
     """
