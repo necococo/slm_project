@@ -6,6 +6,7 @@ import torch.nn as nn
 import numpy as np
 from typing import Dict, Any, Optional
 import math
+from slm.modules.rmsnorm import RMSNorm  # RMSNormをインポート
 
 def get_improved_optimizer(model, learning_rate: float = 5e-5, weight_decay: float = 0.01):
     """
