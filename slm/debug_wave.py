@@ -7,6 +7,7 @@ import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, List, Any, Optional
+from slm.modules.wave_network import compute_wave_representation  # 直接インポート
 
 class WaveDebugger:
     """
@@ -20,32 +21,41 @@ class WaveDebugger:
         """
         model.eval()
         stats = {}
-        hooks = []
         wave_repr_data = {}
         
-        # 波表現をフックで捕捉する関数
-        def get_wave_hook(name, is_global=False):
-            def hook(module, input, output):
-                wave_repr_data[name] = {
-                    'real': output[0].detach().cpu().numpy(),
-                    'imag': output[1].detach().cpu().numpy(),
-                    'global': is_global
-                }
-            return hook
+        # 元の関数の保存
+        original_compute_wave = compute_wave_representation
         
-        # 各レイヤーにフックを追加
-        for i, layer in enumerate(model.layers):
-            # コンピュートメソッドにフックを追加
-            compute_wave_fn = layer.wave_layer.__module__.compute_wave_representation
-            hooks.append(
-                compute_wave_fn.register_forward_hook(
-                    get_wave_hook(f"layer_{i}_token_wave", False)
-                )
-            )
+        # 波表現をキャプチャするラッパー関数
+        def hook_compute_wave(x, global_mode=False, eps=1e-5):
+            real, imag = original_compute_wave(x, global_mode, eps)
             
-        # 推論実行
-        with torch.no_grad():
-            _ = model(sample_input)
+            # 結果を保存
+            layer_idx = getattr(hook_compute_wave, 'current_layer', 0)
+            name = f"layer_{layer_idx}_{'global' if global_mode else 'token'}_wave"
+            
+            wave_repr_data[name] = {
+                'real': real.detach().cpu().numpy(),
+                'imag': imag.detach().cpu().numpy(),
+                'global': global_mode
+            }
+            
+            return real, imag
+        
+        # 関数置き換え
+        from slm.modules import wave_network
+        wave_network.compute_wave_representation = hook_compute_wave
+        
+        # 各レイヤー処理用の番号を保持
+        for i, _ in enumerate(model.layers):
+            hook_compute_wave.current_layer = i
+            
+            # 推論実行 (各レイヤーごとに実行)
+            with torch.no_grad():
+                _ = model(sample_input)
+        
+        # 元の関数に戻す
+        wave_network.compute_wave_representation = original_compute_wave
         
         # 統計解析
         for name, data in wave_repr_data.items():
@@ -66,13 +76,12 @@ class WaveDebugger:
                 'has_inf_imag': np.isinf(imag).any(),
             }
         
-        # フックを削除
-        for hook in hooks:
-            hook.remove()
-        
         # 可視化（オプション）
         if save_path:
             fig, axes = plt.subplots(len(wave_repr_data), 2, figsize=(12, 4*len(wave_repr_data)))
+            if len(wave_repr_data) == 1:
+                axes = np.array([axes])  # 1行の場合は2次元配列に整形
+                
             for i, (name, data) in enumerate(wave_repr_data.items()):
                 real, imag = data['real'], data['imag']
                 # 実部のヒストグラム
