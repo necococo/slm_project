@@ -10,7 +10,7 @@ import math
 from typing import Optional, Tuple
 from slm.modules.rmsnorm import RMSNorm
 from slm.modules.rope import RoPEEmbedding
-from slm.modules.activations import SwiGLU, GatedMLP  # GatedMLPをインポート
+from slm.modules.activations import GatedMLP  # GatedMLPをインポート
 from slm.config import ModelConfig
 
 def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -93,7 +93,7 @@ class WaveLayer(nn.Module):
         # NaN対策
         if torch.isnan(x).any():
             print("Warning: NaNs in input, replacing with zeros")
-            x = torch.nan_to_num(x, nan=0.0)
+            # x = torch.nan_to_num(x, nan=0.0)
         
         # 文レベルのwave表現 (グローバルコンテキスト)
         real_sen, imag_sen = compute_wave_representation(x, global_mode=True, eps=eps)

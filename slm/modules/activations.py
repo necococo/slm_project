@@ -26,7 +26,7 @@ class GatedMLP(nn.Module):
         """
         Args:
             in_features: 入力次元
-            hidden_ratio: 中間層の拡大率 (默認值是 8/3≈2.6667, 相当于传统4倍的约2/3)
+            hidden_ratio: 中間層の拡大率 
         """
         super().__init__()
         hidden_features = int(in_features * hidden_ratio * 2)  # *2はSwiGLUのため
