@@ -49,8 +49,9 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     
     # 比率計算の数値安定性強化
     ratio = x / G_safe
-    # より強いクリッピング (-0.9, 0.9) に制限
-    ratio = torch.clamp(ratio, -0.9, 0.9)  
+    
+    # 改善点: クリッピングの代わりにtanh関数を使用
+    ratio = torch.tanh(ratio) * 0.99  # 新実装: 滑らかな制限で[-0.99, 0.99]に
     
     # 位相角 (α_jk) の計算
     inside = 1.0 - ratio**2
