@@ -13,8 +13,9 @@ from datetime import datetime
 from datasets import load_from_disk
 from transformers import (
     AutoTokenizer,
-    GPT2Config,
-    GPT2LMHeadModel,
+    AutoConfig,
+    BertConfig,
+    BertForMaskedLM,  # GPT2からBERTに変更（MLMタスクに適合）
     Trainer,
     TrainingArguments,
     DataCollatorForLanguageModeling
@@ -60,20 +61,20 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
         
         # モデル設定 (Wave Networkの極小モデルと同程度のサイズ)
-        config = GPT2Config(
+        config = BertConfig(
             vocab_size=len(tokenizer),
-            n_positions=256,
-            n_embd=256,
-            n_layer=2,
-            n_head=8,
-            activation_function="gelu"
+            hidden_size=256,
+            num_hidden_layers=2,
+            num_attention_heads=8,
+            intermediate_size=1024,
+            max_position_embeddings=512
         )
         
         # モデル初期化
-        model = GPT2LMHeadModel(config)
+        model = BertForMaskedLM(config)
         print(f"パラメータ数: {sum(p.numel() for p in model.parameters())/1000000:.2f}M")
         
-        # 学習設定
+        # 学習設定 (wandbを無効化)
         training_args = TrainingArguments(
             output_dir=baseline_dir,
             overwrite_output_dir=True,
@@ -82,47 +83,12 @@ def main():
             per_device_eval_batch_size=16,
             evaluation_strategy="epoch",
             save_strategy="epoch",
+            save_total_limit=2,  # 保存するチェックポイント数を制限
             logging_dir=os.path.join(paths_config.log_dir, "baseline"),
             logging_steps=100,
             learning_rate=5e-5,
             weight_decay=0.01,
-            push_to_hub=False
-        )
-        
-        # データコレータ
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer,
-            mlm=True,
-            mlm_probability=0.15
-        )
-        
-        # トレーナー
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            data_collator=data_collator,
-            train_dataset=train_subset,
-            eval_dataset=valid_subset
-        )
-        
-        # 学習実行
-        print("Transformerベースラインモデル学習開始...")
-        trainer.train()
-        
-        # 評価
-        eval_results = trainer.evaluate()
-        print(f"評価結果: {eval_results}")
-        
-        # モデル保存
-        trainer.save_model(os.path.join(baseline_dir, "final"))
-        print(f"モデル保存完了: {os.path.join(baseline_dir, 'final')}")
-        
-    except Exception as e:
-        print(f"エラーが発生しました: {e}")
-        import traceback
-        traceback.print_exc()
-        
-    print(f"=== 処理完了: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
-
-if __name__ == "__main__":
-    main()
+            push_to_hub=False,
+            report_to=[],  # wandbを含むすべてのレポーティングを無効化
+            run_name="bert_baseline",  # 一意の実行名
+            dataloader_num_workers=4
