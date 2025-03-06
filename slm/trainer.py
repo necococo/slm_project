@@ -170,6 +170,11 @@ class Trainer:
 
         loss = linear_cross_entropy(embeddings, classifier, labels)
         loss.backward()
+        
+        # 勾配クリッピング（追加）
+        if hasattr(self, 'clip_value') and self.clip_value:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_value)
+        
         self.optimizer.step()
             
         # ログ
