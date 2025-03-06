@@ -75,7 +75,7 @@ class TrainingConfig:
     def __init__(
         self,
         learning_rate: float = 1e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
-        batch_size: int = 128,
+        batch_size: int = 96,
         mlm_epochs: int = 3,
         mlm_probability: float = 0.2,
         diffusion_epochs: int = 0,
