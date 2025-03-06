@@ -10,28 +10,35 @@ import math
 from typing import Optional, Tuple
 from slm.modules.rmsnorm import RMSNorm
 from slm.modules.rope import RoPEEmbedding
-from slm.modules.activations import SwiGLU  # カスタム実装をインポート
+from slm.modules.activations import SwiGLU, GatedMLP  # GatedMLPをインポート
 from slm.config import ModelConfig
 
-def to_wave_representation(x: torch.Tensor, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
+def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     入力テンソルを波表現（実部と虚部）に変換
-    Fig.6(a)の左上部分の実装
     
     Args:
         x: 入力テンソル [batch_size, seq_len, dim]
+        global_mode: Trueなら文レベル(グローバル)、Falseならトークンレベル(ローカル)
         eps: 数値安定性のための小さな値
         
     Returns:
         (real_part, imag_part): 波表現の実部と虚部
     """
-    # 計算は float32 で
+    # 念の為float32に
     x = x.float()
     B, S, D = x.shape
     
-    # グローバル振幅 (G_k)
-    G = torch.sqrt(torch.sum(x * x, dim=1, keepdim=True) + eps)  # [B, 1, D]
-    G = G.expand(-1, S, -1)  # [B, S, D]
+    # グローバル振幅の計算 (モードによって集約次元が異なる)
+    if global_mode:
+        # 文レベル: dim=(1, 2) で全体のコンテキスト情報を捉える
+        G = torch.sqrt(torch.sum(x * x, dim=(1, 2), keepdim=True) + eps)  # [B, 1, 1]
+        G = G.expand(-1, S, D)  # [B, S, D]
+    else:
+        # トークンレベル: dim=1 で各次元の特徴量を保存する
+        G = torch.sqrt(torch.sum(x * x, dim=1, keepdim=True) + eps)  # [B, 1, D]
+        G = G.expand(-1, S, -1)  # [B, S, D]
+    
     G_safe = torch.clamp(G, min=eps)
     
     # 比率 (w_jk / G_k)
@@ -59,12 +66,8 @@ class WaveLayer(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         
-        # Feed Forward Network (SwiGLU実装を修正)
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size * 8),  # 出力次元を2倍に (SwiGLU用)
-            SwiGLU(dim=-1),  # カスタム実装を使用
-            nn.Linear(hidden_size * 4, hidden_size * 2)  # SwiGLUにより次元が半分になる
-        )
+        # Feed Forward Network - 効率的なGatedMLPを使用
+        self.ffn = GatedMLP(hidden_size * 2)
         
         # Normalization layers
         self.ffn_norm = RMSNorm(hidden_size * 2)
@@ -93,22 +96,10 @@ class WaveLayer(nn.Module):
             x = torch.nan_to_num(x, nan=0.0)
         
         # 文レベルのwave表現 (グローバルコンテキスト)
-        G_sen = torch.sqrt(torch.sum(x * x, dim=(1, 2), keepdim=True) + eps)  # [B, 1, 1]
-        G_sen = G_sen.expand(-1, S, D)  # [B, S, D]
-        G_sen_safe = torch.clamp(G_sen, min=eps)
-        
-        ratio_sen = x / G_sen_safe
-        ratio_sen = torch.clamp(ratio_sen, -0.99, 0.99)
-        
-        inside_sen = 1.0 - ratio_sen**2
-        inside_sen = F.relu(inside_sen) + eps
-        
-        alpha_sen = torch.atan2(torch.sqrt(inside_sen), ratio_sen)
-        real_sen = G_sen_safe * torch.cos(alpha_sen)
-        imag_sen = G_sen_safe * torch.sin(alpha_sen)
+        real_sen, imag_sen = compute_wave_representation(x, global_mode=True, eps=eps)
         
         # トークンレベルのwave表現
-        real_token, imag_token = to_wave_representation(x, eps)
+        real_token, imag_token = compute_wave_representation(x, global_mode=False, eps=eps)
         
         # 波の干渉（加算）- Fig.6(a)の中央部分
         # (a+bi) + (c+di) = (a+c) + (b+d)i
