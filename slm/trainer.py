@@ -160,15 +160,19 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        # forward
-        embeddings = self.model(input_ids)  # => float32計算 + wave => 最終 .half()
-        classifier = self.model.get_classifier_weights()  # => (V, D) float32かもしれないが...
-
-        # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+        # forward (mixed precision対応)
+        # AMPを使いつつもlinear_cross_entropyのために明示的にfp16に変換
+        embeddings = self.model(input_ids)
+        classifier = self.model.get_classifier_weights()
+        
+        # 必ず半精度に変換（linear_cross_entropy の要件）
         embeddings = embeddings.half()
         classifier = classifier.half()
-
+        
+        # ロス計算
         loss = linear_cross_entropy(embeddings, classifier, labels)
+        
+        # 勾配計算
         loss.backward()
         
         # 勾配クリッピング（追加）
@@ -279,10 +283,22 @@ class Trainer:
             return 0.0
         self.model.eval()
         
+        # カスタムコレータの取得（これが欠けていた）
+        tokenizer = self.model.config.tokenizer
+        collator = CustomCollator(
+            tokenizer=tokenizer,
+            model_config=self.model.config,
+            mlm=True,
+            mlm_probability=self.training_config.mlm_probability,
+            mask_token_id=tokenizer.mask_token_id,
+            qa=False
+        )
+        
         dataloader = DataLoader(
             self.valid_dataset,
             batch_size=self.training_config.batch_size,
-            shuffle=False
+            shuffle=False,
+            collate_fn=collator  # ここにコレータを追加
         )
         
         total_loss = 0.0
@@ -293,9 +309,11 @@ class Trainer:
                 
                 embeddings = self.model(input_ids)
                 classifier = self.model.get_classifier_weights()
-                # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+                
+                # 必ず半精度に変換（linear_cross_entropy の要件）
                 embeddings = embeddings.half()
                 classifier = classifier.half()
+                
                 loss = linear_cross_entropy(embeddings, classifier, labels)
                 total_loss += loss.item()
         

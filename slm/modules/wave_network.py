@@ -26,7 +26,7 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
         (real_part, imag_part): 波表現の実部と虚部
     """
     # 念の為float32に
-    x = x.float()
+    # x = x.float()
     B, S, D = x.shape
     
     # グローバル振幅の計算 (モードによって集約次元が異なる)
