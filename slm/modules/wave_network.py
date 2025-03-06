@@ -25,8 +25,14 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     Returns:
         (real_part, imag_part): 波表現の実部と虚部
     """
-    # 念の為float32に
-    # x = x.float()
+    # 数値安定性のためにepsを大きくする
+    eps = 1e-4  # 以前は1e-5
+    
+    # 念の為float32に強制変換し、NaNをチェック
+    x = x.float()
+    if torch.isnan(x).any():
+        x = torch.nan_to_num(x, nan=0.0)
+    
     B, S, D = x.shape
     
     # グローバル振幅の計算 (モードによって集約次元が異なる)
@@ -41,9 +47,10 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     
     G_safe = torch.clamp(G, min=eps)
     
-    # 比率 (w_jk / G_k)
+    # 比率計算の数値安定性強化
     ratio = x / G_safe
-    ratio = torch.clamp(ratio, -0.99, 0.99)  # 数値安定性のため
+    # より強いクリッピング (-0.9, 0.9) に制限
+    ratio = torch.clamp(ratio, -0.9, 0.9)  
     
     # 位相角 (α_jk) の計算
     inside = 1.0 - ratio**2
@@ -55,6 +62,10 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     # 波表現への変換
     real_part = G_safe * torch.cos(alpha)
     imag_part = G_safe * torch.sin(alpha)
+    
+    # 最終的な数値チェック
+    real_part = torch.nan_to_num(real_part)
+    imag_part = torch.nan_to_num(imag_part)
     
     return real_part, imag_part
 
@@ -199,12 +210,17 @@ class WaveNetworkLM(nn.Module):
         # トークン埋め込み　nanが多発するので精緻な計算をするためfloat32にしておく
         self.token_embedding = nn.Embedding(vocab_size, hidden_size, dtype=torch.float32)
         
-        # Wave Network Blocksのスタック
+        # RoPEを最初に一度だけ適用する設計に変更
+        self.use_rope = use_rope
+        if use_rope:
+            self.rope = RoPEEmbedding(hidden_size, max_seq_len)
+        
+        # Wave Network Blocksのスタック - RoPEなしの設定に
         self.layers = nn.ModuleList([
             WaveNetworkBlock(
                 hidden_size=hidden_size,
                 dropout_prob=dropout_prob,
-                use_rope=use_rope,
+                use_rope=False,  # 各レイヤーではRoPEを使わない
                 max_seq_len=max_seq_len
             ) for _ in range(num_layers)
         ])
@@ -237,8 +253,15 @@ class WaveNetworkLM(nn.Module):
         """
         # トークン埋め込み
         hidden_states = self.token_embedding(input_ids)
+        
+        # RoPEを最初に一度だけ適用
+        if self.use_rope:
+            B, S, D = hidden_states.shape
+            x_4d = hidden_states.view(B, S, 1, D)
+            x_4d_rope = self.rope(x_4d)
+            hidden_states = x_4d_rope.view(B, S, D)
 
-        # 各レイヤーを通過
+        # 各レイヤーを通過（RoPEなしで）
         for layer in self.layers:
             hidden_states = layer(hidden_states)
             
