@@ -1,7 +1,6 @@
 """
 Wave Network - An Ultra-Small Language Model (https://arxiv.org/abs/2411.02674v4)
 この実装はFigure 6(a)(b)に基づき、波の加算による干渉表現とRoPE位置エンコーディングを使用しています。
-こっちのほうがあっている気がする
 """
 
 import torch
@@ -9,9 +8,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Optional, Tuple
-
 from slm.modules.rmsnorm import RMSNorm
 from slm.modules.rope import RoPEEmbedding
+from slm.modules.activations import SwiGLU  # カスタム実装をインポート
 from slm.config import ModelConfig
 
 def to_wave_representation(x: torch.Tensor, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -60,11 +59,11 @@ class WaveLayer(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         
-        # Feed Forward Network
+        # Feed Forward Network (SwiGLU実装を修正)
         self.ffn = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size * 4),
-            nn.SwiGLU(),
-            nn.Linear(hidden_size * 4, hidden_size * 2)
+            nn.Linear(hidden_size * 2, hidden_size * 8),  # 出力次元を2倍に (SwiGLU用)
+            SwiGLU(dim=-1),  # カスタム実装を使用
+            nn.Linear(hidden_size * 4, hidden_size * 2)  # SwiGLUにより次元が半分になる
         )
         
         # Normalization layers

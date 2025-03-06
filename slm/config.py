@@ -25,7 +25,7 @@ class ModelConfig:
         hidden_size: int = 768,
         num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
-        max_seq_len: int = 1024,
+        max_seq_len: int = 512,
         dropout_prob: float = 0.1,
         use_rope: bool = True,
         use_wavelet: bool = False,
