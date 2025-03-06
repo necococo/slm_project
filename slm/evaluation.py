@@ -20,7 +20,7 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader, Dataset
 from slm.cce_loss import CceLoss
-from slm.model import WaveHierarchicalLM
+from slm.modules.wave_network import WaveNetworkLM
 
 import evaluate
 
@@ -29,7 +29,7 @@ rouge_metric = evaluate.load("rouge")
 
 
 def evaluate_perplexity(
-    model: WaveHierarchicalLM,
+    model: WaveNetworkLM,
     dataset: Dataset,
     device: torch.device,
     batch_size: int = 8
@@ -60,7 +60,7 @@ def evaluate_perplexity(
 
 
 def evaluate_bleu(
-    model: WaveHierarchicalLM,
+    model: WaveNetworkLM,
     dataset: Dataset,
     device: torch.device,
     batch_size: int = 8,
@@ -119,7 +119,7 @@ def evaluate_bleu(
 
 
 def evaluate_rouge(
-    model: WaveHierarchicalLM,
+    model: WaveNetworkLM,
     dataset: Dataset,
     device: torch.device,
     batch_size: int = 8,
@@ -173,7 +173,7 @@ def evaluate_rouge(
 
 
 def temperature_sampling_decode(
-    model: WaveHierarchicalLM,
+    model: WaveNetworkLM,
     input_ids: torch.Tensor,
     max_new_tokens: int,
     device: torch.device,

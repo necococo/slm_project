@@ -9,13 +9,13 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Optional, Tuple, Union
-
-from .config import ModelConfig, TrainingConfig, PathsConfig
-from .model import WaveNetworkLM
 from cut_cross_entropy import linear_cross_entropy
-from .diffusion import SimpleTextDiffusion
-from .utils import get_model_size, compute_flops_per_batch
-from .collator import CustomCollator
+
+from slm.config import ModelConfig, TrainingConfig, PathsConfig
+from slm.modules.wave_network import WaveNetworkLM
+from slm.diffusion import SimpleTextDiffusion
+from slm.utils import get_model_size, compute_flops_per_batch
+from slm.collator import CustomCollator
 
 
 class Trainer:

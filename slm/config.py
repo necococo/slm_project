@@ -15,24 +15,27 @@ class ModelConfig:
         num_layers: WaveBlock + RoPEレイヤの段数
         vocab_size: 語彙サイズ（トークナイザーから自動取得も可能）
         max_seq_len: 最大シーケンス長
+        dropout_prob: ドロップアウト率
+        use_rope: RoTary Position Embeddingを使うかどうか
         use_wavelet: Wavelet変換を使用するかどうか (True/False)
         wavelet_name: PyWaveletsで使用するWaveletの名称 (例: 'haar', 'db1', 'db2'など)
-        
     """
     def __init__(
         self,
         hidden_size: int = 768,
         num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
-        max_seq_len: int = 512,
+        max_seq_len: int = 1024,
+        dropout_prob: float = 0.1,
         use_rope: bool = True,
         use_wavelet: bool = False,
-        wavelet_name: Optional[str] = None
+        wavelet_name: Optional[str] = None,
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self._vocab_size = vocab_size
         self.max_seq_len = max_seq_len
+        self.dropout_prob = dropout_prob
         self.use_rope = use_rope
         self.use_wavelet = use_wavelet
         self.wavelet_name = wavelet_name
@@ -56,8 +59,11 @@ class ModelConfig:
             raise ValueError("vocab_sizeが設定されておらず、トークナイザーも設定されていません")
         
         return self._vocab_size
-
+    
     def set_tokenizer(self, tokenizer) -> None:
+        """
+        トークナイザーを設定し、語彙サイズを自動的に取得できるようにする
+        """
         self.tokenizer = tokenizer
         
 class TrainingConfig:
@@ -71,27 +77,30 @@ class TrainingConfig:
         learning_rate: float = 1e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
         batch_size: int = 128,
         mlm_epochs: int = 3,
-        mlm_probability: float = 0.2,  # 型注釈を追加
+        mlm_probability: float = 0.2,
         diffusion_epochs: int = 0,
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
+        accumulation_steps: int = 1,  # 勾配累積ステップ数
+        max_steps: Optional[int] = None,  # 最大ステップ数（Noneの場合はエポック数で制御）
         # 以下に新しい設定項目を追加
         use_amp: bool = True,  # 混合精度トレーニング
         use_gradient_checkpointing: bool = True,  # 勾配チェックポイント
-        gradient_accumulation_steps: int = 1,  # 勾配累積ステップ数
         clip_grad_norm: Optional[float] = True,  # 勾配クリッピング
     ):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.mlm_epochs = mlm_epochs
-        self.mlm_probability = mlm_probability  # 追加
+        self.mlm_probability = mlm_probability
         self.diffusion_epochs = diffusion_epochs
         self.weight_decay = weight_decay
         self.warmup_steps = warmup_steps
+        self.accumulation_steps = accumulation_steps
+        self.max_steps = max_steps
         # メモリ効率的な学習の設定
         self.use_amp = use_amp
         self.use_gradient_checkpointing = use_gradient_checkpointing
-        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.gradient_accumulation_steps = accumulation_steps  # 互換性のため
         self.clip_grad_norm = clip_grad_norm
 
 
@@ -112,9 +121,7 @@ class PathsConfig:
         base_dir: str = "/content/drive/MyDrive/slm",
         dataset_name: str = "singletongue/wikipedia-utils",
         dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
-        # tokenizer_name: str = "NovelAI/nerdstash-tokenizer-v2" 
         tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking"
-        
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = os.path.join(self.base_dir, "data")

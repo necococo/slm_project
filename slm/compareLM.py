@@ -22,7 +22,7 @@ import torch
 from typing import Dict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from slm.model import WaveHierarchicalLM
+from slm.model import WaveNetworklLM
 from slm.evaluation import (
     evaluate_perplexity,
     evaluate_bleu,

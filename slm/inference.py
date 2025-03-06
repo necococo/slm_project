@@ -2,10 +2,10 @@
 # Why not: 簡単なGreedyサンプリング。QAとしての回答抽出ではない。
 
 import torch
-from slm.model import WaveHierarchicalLM
+from slm.modules.wave_network import WaveNetworkLM
 
 def sample_text(
-    model: WaveHierarchicalLM,
+    model: WaveNetworkLM,
     input_ids: torch.Tensor,
     max_len: int = 50,
     device: torch.device = torch.device("cpu")

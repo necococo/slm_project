@@ -9,9 +9,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Optional, Tuple
-from .rmsnorm import RMSNorm
-from .rope import RoPEEmbedding
 
+from slm.modules.rmsnorm import RMSNorm
+from slm.modules.rope import RoPEEmbedding
+from slm.config import ModelConfig
 
 def to_wave_representation(x: torch.Tensor, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -83,7 +84,7 @@ class WaveLayer(nn.Module):
             
         Returns:
             処理された出力テンソル [B, S, D]
-        """
+        """       
         B, S, D = x.shape
         eps = 1e-5
         
@@ -184,26 +185,29 @@ class WaveNetworkBlock(nn.Module):
         # 残差接続
         output = x + self.dropout(wave_output)
         output = self.norm(output)
-        # 最終的に half() で返す (cut_cross_entropy用)
-        return output.half()
 
-class WaveNetworkModel(nn.Module):
+        return output
+
+class WaveNetworkLM(nn.Module):
     """
     Wave Network モデル全体の実装
     """
     def __init__(
         self,
-        vocab_size: int,
-        hidden_size: int = 768,
-        num_layers: int = 6,
-        dropout_prob: float = 0.1,
-        max_seq_len: int = 2048,
-        use_rope: bool = True
+        config: ModelConfig
     ):
         super().__init__()
+        self.config = config
         
-        # トークン埋め込み
-        self.token_embedding = nn.Embedding(vocab_size, hidden_size)
+        vocab_size = config.vocab_size
+        hidden_size = config.hidden_size
+        num_layers = config.num_layers
+        max_seq_len = config.max_seq_len
+        dropout_prob = config.dropout_prob
+        use_rope = config.use_rope
+        
+        # トークン埋め込み　nanが多発するので精緻な計算をするためfloat32にしておく
+        self.token_embedding = nn.Embedding(vocab_size, hidden_size, dtype=torch.float32)
         
         # Wave Network Blocksのスタック
         self.layers = nn.ModuleList([
@@ -215,10 +219,12 @@ class WaveNetworkModel(nn.Module):
             ) for _ in range(num_layers)
         ])
         
+        # 分類器（cut-cross-entropy用の重み）
+        self.classifier = nn.Linear(hidden_size, vocab_size, bias=False)
+        
         # 最終ノーマライゼーション
         self.norm = RMSNorm(hidden_size)
-        
-        # 初期化
+        # 初期化 直下の_init_weightsクラス関数をつかう
         self.apply(self._init_weights)
         
     def _init_weights(self, module):
@@ -241,12 +247,23 @@ class WaveNetworkModel(nn.Module):
         """
         # トークン埋め込み
         hidden_states = self.token_embedding(input_ids)
-        
+
         # 各レイヤーを通過
         for layer in self.layers:
             hidden_states = layer(hidden_states)
             
         # 最終ノーマライゼーション
         hidden_states = self.norm(hidden_states)
-        
-        return hidden_states
+
+        logits = self.classifier(hidden_states)
+
+        return hidden_states # Cut Cross Entropyでは logitではなく embeddings=hidden_states を入力する
+
+    def get_classifier_weights(self) -> torch.Tensor:
+        """
+        How:
+            cut-cross-entropyで linear_cross_entropy() を呼ぶ際に必要となる
+            分類器の重み (V, D) を返す。
+        """
+        # classifier.weight shape: (V, D)
+        return self.classifier.weight

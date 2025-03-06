@@ -22,101 +22,67 @@ def save_checkpoint(state: dict, checkpoint_dir: str, filename: str = None):
     torch.save(state, path)
     print(f"Checkpoint saved to {path}")
 
-def load_checkpoint(checkpoint_path: str, model, optimizer=None, device="cpu"):
+def load_checkpoint(checkpoint_path: str, model: nn.Module) -> None:
     """
-    保存されたチェックポイントからモデルとオプティマイザの状態を読み込む関数
+    保存されたチェックポイントからモデルを読み込みます。
     
     Args:
-        checkpoint_path (str): 保存されたチェックポイントのパス。
-        model (torch.nn.Module): 読み込み先のモデル。
-        optimizer (torch.optim.Optimizer, optional): オプティマイザ（存在する場合）。
-        device (str or torch.device, optional): モデルを配置するデバイス。
-    
-    Returns:
-        int: チェックポイントに記録されたエポック番号（なければ0）。
+        checkpoint_path: チェックポイントファイルのパス
+        model: 読み込み先のモデル
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    if optimizer is not None and "optimizer_state_dict" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    epoch = checkpoint.get("epoch", 0)
-    print(f"Checkpoint loaded from {checkpoint_path}, epoch {epoch}")
-    return epoch
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"チェックポイントを読み込みました: {checkpoint_path}")
+    except Exception as e:
+        print(f"チェックポイント読み込み中にエラーが発生しました: {e}")
 
 def get_model_size(model: nn.Module) -> int:
     """
-    モデルのパラメータ数（トレーニング可能な重みの数）を計算します。
+    モデルのパラメータ数を計算します。
     
     Args:
-        model: サイズを計算するモデル
+        model: 計算対象のモデル
         
     Returns:
         パラメータの総数
     """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def compute_flops_per_batch(model: nn.Module, input_shape: Tuple[int, ...], detailed: bool = False) -> Union[float, Dict[str, float]]:
+def compute_flops_per_batch(model: nn.Module, input_shape: Tuple[int, int]) -> float:
     """
-    モデルの1バッチあたりの概算FLOPsを計算します。
+    1バッチあたりのおおよそのFLOPsを計算（簡易的な推定）
     
-    実装の詳細:
-        かなり大雑把な見積もりで、実際のFLOPsは実装によって大きく変わります。
-        主要な行列積演算や活性化関数の計算量を基に推定値を出します。
-        
     Args:
-        model: FLOPsを計算するモデル
-        input_shape: 入力テンソルの形状。通常は(batch_size, seq_len)
-        detailed: Trueの場合は各レイヤー別の計算量も返す
+        model: 対象モデル
+        input_shape: 入力形状 (batch_size, seq_len)
         
     Returns:
-        推定されるFLOPs数
+        推定されるFLOPs数（浮動小数点演算数）
     """
-    # WaveHierarchicalLM向けの簡易FLOPs計算
+    # 非常に簡易的な推定。実際には各層ごとに正確な計算をするべき
     batch_size, seq_len = input_shape
-    hidden_size = model.config.hidden_size if hasattr(model, 'config') else 256
-    num_layers = model.config.num_layers if hasattr(model, 'config') else 3
-    vocab_size = model.config.vocab_size if hasattr(model, 'config') else 30000
+    hidden_size = model.config.hidden_size
+    num_layers = model.config.num_layers
+    vocab_size = model.config.vocab_size
     
-    # 各コンポーネントのFLOPs見積もり
-    embedding_flops = batch_size * seq_len * hidden_size  # Embedding lookup
+    # 埋め込み層のFLOPs
+    embedding_flops = batch_size * seq_len * hidden_size
     
-    # Wave表現への変換
-    wave_conversion_flops = batch_size * seq_len * hidden_size * 5  # G計算+三角関数+乗算
-    
-    # WaveBlock計算 (各レイヤー)
-    single_layer_flops = batch_size * seq_len * (
-        # 線形変換x2
-        2 * hidden_size * hidden_size * 2 * 2 +
-        # 加算と波形変換
-        hidden_size * 10
+    # 各トランスフォーマー層のFLOPs (非常に簡易的)
+    # Wave Networkはself-attentionを使わないので、単純に各層のFFNのFLOPsだけ考慮
+    layer_flops = batch_size * seq_len * (
+        # FFNのFLOPs (簡易的な見積もり)
+        4 * hidden_size * hidden_size + 
+        # その他の操作 (wave変換など)
+        10 * hidden_size
     )
     
-    # RoPE適用（使用時）
-    rope_flops = 0
-    if hasattr(model, 'use_rope') and model.use_rope:
-        rope_flops = batch_size * seq_len * hidden_size * 6  # cos/sin乗算
-    
-    # 出力層
-    output_flops = batch_size * seq_len * hidden_size * 2 * vocab_size
+    # 全層のFLOPs
+    all_layers_flops = num_layers * layer_flops
     
     # 合計
-    total_flops = (
-        embedding_flops + 
-        wave_conversion_flops + 
-        single_layer_flops * num_layers +
-        rope_flops * num_layers +
-        output_flops
-    )
-    
-    if detailed:
-        return {
-            'embedding': embedding_flops,
-            'wave_conversion': wave_conversion_flops,
-            'wave_blocks': single_layer_flops * num_layers,
-            'rope': rope_flops * num_layers,
-            'output': output_flops,
-            'total': total_flops
-        }
+    total_flops = embedding_flops + all_layers_flops
     
     return total_flops
 

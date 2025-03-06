@@ -17,7 +17,7 @@ from datasets import load_dataset, load_from_disk
 from transformers import AutoTokenizer
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
-from slm.model import WaveNetworkLM
+from slm.modules.wave_network import WaveNetworkLM
 from slm.trainer import Trainer
 
 def main():
