@@ -60,6 +60,20 @@ def main():
         # Tokenizer
         tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
         
+        # 重要: シーケンス長を制限する前処理
+        def truncate_sequences(examples):
+            # input_idsを最大512トークンに制限
+            max_length = 512
+            for key in ['input_ids', 'attention_mask', 'token_type_ids']:
+                if key in examples:
+                    # トークン列の長さが512を超える場合は切り詰め
+                    examples[key] = [seq[:max_length] for seq in examples[key]]
+            return examples
+        
+        print("シーケンス長を制限しています...")
+        train_subset = train_subset.map(truncate_sequences, batched=True)
+        valid_subset = valid_subset.map(truncate_sequences, batched=True)
+        
         # モデル設定 (Wave Networkの極小モデルと同程度のサイズ)
         config = BertConfig(
             vocab_size=len(tokenizer),
@@ -67,7 +81,7 @@ def main():
             num_hidden_layers=2,
             num_attention_heads=8,
             intermediate_size=1024,
-            max_position_embeddings=512
+            max_position_embeddings=512  # この値が上限
         )
         
         # モデル初期化
@@ -99,12 +113,17 @@ def main():
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=tokenizer,
             mlm=True,
-            mlm_probability=0.15
+            mlm_probability=0.15,
+            pad_to_multiple_of=8  # TPU/GPUの効率化のため8の倍数にパディング
         )
         
         # トークナイザーのパディングトークンIDの設定を確認
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
+            
+        # 念のため全シーケンスの長さをチェック
+        max_len = max([len(seq) for seq in train_subset['input_ids']])
+        print(f"訓練データの最大シーケンス長: {max_len}")
         
         # トレーナー
         trainer = Trainer(
