@@ -91,4 +91,48 @@ def main():
             push_to_hub=False,
             report_to=[],  # wandbを含むすべてのレポーティングを無効化
             run_name="bert_baseline",  # 一意の実行名
-            dataloader_num_workers=4
+            dataloader_num_workers=4,  # データローダーの並列処理を有効化
+            fp16=True  # 混合精度学習を有効化
+        )
+        
+        # データコレータ
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=True,
+            mlm_probability=0.15
+        )
+        
+        # トークナイザーのパディングトークンIDの設定を確認
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        # トレーナー
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            data_collator=data_collator,
+            train_dataset=train_subset,
+            eval_dataset=valid_subset
+        )
+        
+        # 学習実行
+        print("BERTベースラインモデル学習開始...")
+        trainer.train()
+        
+        # 評価
+        eval_results = trainer.evaluate()
+        print(f"評価結果: {eval_results}")
+        
+        # モデル保存
+        trainer.save_model(os.path.join(baseline_dir, "final"))
+        print(f"モデル保存完了: {os.path.join(baseline_dir, 'final')}")
+        
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    print(f"=== 処理完了: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+
+if __name__ == "__main__":
+    main()
