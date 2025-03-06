@@ -21,7 +21,7 @@ class ModelConfig:
     """
     def __init__(
         self,
-        hidden_size: int = 1024,
+        hidden_size: int = 768,
         num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
         max_seq_len: int = 512,
@@ -68,9 +68,10 @@ class TrainingConfig:
     """
     def __init__(
         self,
-        learning_rate: float = 1e-5, # 1e-4だと数値が不安定になりロスにnanがでる
-        batch_size: int = 64,
+        learning_rate: float = 1e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
+        batch_size: int = 128,
         mlm_epochs: int = 3,
+        mlm_probability: float = 0.2,  # 型注釈を追加
         diffusion_epochs: int = 0,
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
@@ -83,6 +84,7 @@ class TrainingConfig:
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.mlm_epochs = mlm_epochs
+        self.mlm_probability = mlm_probability  # 追加
         self.diffusion_epochs = diffusion_epochs
         self.weight_decay = weight_decay
         self.warmup_steps = warmup_steps

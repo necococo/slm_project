@@ -5,7 +5,7 @@ import os
 import time
 import torch
 import torch.nn as nn
-import torch.optim as optim
+from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Optional, Tuple, Union
@@ -59,11 +59,12 @@ class Trainer:
             print(f"WARNING: Lowering learning rate from {learning_rate} to 1e-5 for stability")
             learning_rate = 1e-5
 
-        # Optimizer
-        self.optimizer = optim.Adam(
-            self.model.parameters(), 
+        # Optimizer を AdamW に変更
+        self.optimizer = AdamW(
+            self.model.parameters(),
             lr=learning_rate,
-            eps=1e-5  # epsilonを大きめに
+            weight_decay=self.training_config.weight_decay,
+            eps=1e-5
         )
         
         # 追加: CosineAnnealingLR スケジューラの初期化
@@ -99,7 +100,7 @@ class Trainer:
             tokenizer=tokenizer,
             model_config=self.model.config,
             mlm=True,
-            mlm_probability=0.15,
+            mlm_probability=self.training_config.mlm_probability,
             mask_token_id=tokenizer.mask_token_id,
             qa=False
         )
@@ -244,7 +245,9 @@ class Trainer:
             with torch.cuda.amp.autocast():
                 embeddings = self.model(input_ids)
                 classifier = self.model.get_classifier_weights()
-                # ここで diffuser を使った計算が必要なら適宜足す
+                # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+                embeddings = embeddings.half()
+                classifier = classifier.half()
                 loss = linear_cross_entropy(embeddings, classifier, labels)
             
             self.scaler.scale(loss).backward()
@@ -253,8 +256,10 @@ class Trainer:
         else:
             embeddings = self.model(input_ids)
             classifier = self.model.get_classifier_weights()
-            loss = linear_cross_entropy(embeddings, classifier, labels)
-            
+            # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+            embeddings = embeddings.half()
+            classifier = classifier.half()
+            loss = linear_cross_entropy(embeddings, classifier, labels)  # 追加：lossの計算
             loss.backward()
             self.optimizer.step()
         

@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from slm.config import ModelConfig
+from slm.modules.rmsnorm import RMSNorm  # 追加
 
 def to_wave_representation(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -25,10 +26,11 @@ def to_wave_representation(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]
     
     ratio = x_32 / G_safe
     ratio_clamped = torch.clamp(ratio, -0.99, 0.99)
-    
+    # ratio_clamped = torch.tanh(ratio)
+
     inside = 1.0 - ratio_clamped**2
     # 負値を ReLU でつぶし + EPS
-    inside = F.relu(inside) + EPS
+    inside = F.ReLU(inside) + EPS
 
     alpha = torch.atan2(torch.sqrt(inside), ratio_clamped)
     real_part = G_safe * torch.cos(alpha)
@@ -49,15 +51,16 @@ class SingleWaveLayer(nn.Module):
         # FeedForward
         self.ffn = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size * 4),
-            nn.ReLU(),
+            nn.SwiGLU(),
             nn.Linear(hidden_size * 4, hidden_size * 2)
         )
-        self.ffn_norm = nn.LayerNorm(hidden_size * 2)
+        # nn.LayerNorm を RMSNorm に置換
+        self.ffn_norm = RMSNorm(hidden_size * 2)
 
         # restore => (B,S,2D)->(B,S,D)
         self.restore_linear = nn.Linear(hidden_size * 2, hidden_size)
         self.overlay_dropout = nn.Dropout(dropout_prob)
-        self.overlay_norm = nn.LayerNorm(hidden_size)
+        self.overlay_norm = RMSNorm(hidden_size)  # 置換
 
     def forward(
         self,
