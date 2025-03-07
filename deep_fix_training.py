@@ -73,8 +73,8 @@ def main():
             print(f"元のデータセットサイズ - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
             
             # デフォルトサブセットを準備（最小サイズで）
-            train_subset = train_dataset.select(range(min(dataset_sizes[0], len(train_dataset))))
-            valid_subset = valid_dataset.select(range(min(dataset_sizes[0]//10000, len(valid_dataset))))
+            train_subset = train_dataset.select(range(10000))
+            valid_subset = valid_dataset.select(range(100))
             
             print(f"テスト用サブセットサイズ - 学習: {len(train_subset)}件, 検証: {len(valid_subset)}件")
             
