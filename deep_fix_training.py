@@ -73,12 +73,37 @@ def main():
                 print(f"トークナイザーが見つかりません。{paths_config.tokenizer_name}からダウンロードします...")
                 # トークナイザー保存用のディレクトリを作成
                 os.makedirs(os.path.dirname(paths_config.tokenizer_path), exist_ok=True)
-                tokenizer = JapaneseTokenizer(
-                    hf_model=paths_config.tokenizer_name, 
-                    save_to=paths_config.tokenizer_path,
-                    model_file=None
-                )
-                print(f"トークナイザーを保存しました: {paths_config.tokenizer_path}")
+                
+                try:
+                    # まず一般的なファイル名でダウンロードを試みる
+                    possible_files = ["tokenizer.model", "spiece.model", "tokenizer_model.json", "tokenizer.json", "vocab.txt"]
+                    success = False
+                    
+                    for file_name in possible_files:
+                        try:
+                            print(f"{file_name}のダウンロードを試みます...")
+                            tokenizer = JapaneseTokenizer(
+                                hf_model=paths_config.tokenizer_name, 
+                                save_to=paths_config.tokenizer_path,
+                                model_file=None,
+                                filename=file_name  # 追加: ファイル名を指定
+                            )
+                            print(f"トークナイザーを保存しました: {paths_config.tokenizer_path}")
+                            success = True
+                            break
+                        except Exception as e:
+                            print(f"  {file_name}の読み込み失敗: {e}")
+                            continue
+                    
+                    if not success:
+                        raise ValueError("互換性のあるトークナイザーファイルが見つかりませんでした")
+                except Exception as e:
+                    print(f"トークナイザーのダウンロードに失敗しました: {str(e)}")
+                    print("AutoTokenizerを使用します...")
+                    from transformers import AutoTokenizer
+                    huggingface_tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
+                    # HuggingFaceのトークナイザーをJapaneseTokenizerのラッパーに変換
+                    tokenizer = JapaneseTokenizer.from_pretrained_tokenizer(huggingface_tokenizer)
 
             from datasets import load_from_disk
             train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))

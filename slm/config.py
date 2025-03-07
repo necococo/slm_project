@@ -132,7 +132,8 @@ class PathsConfig:
         base_dir: str = "/content/drive/MyDrive/slm",
         dataset_name: str = "singletongue/wikipedia-utils",
         dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
-        tokenizer_name: str = "tohoku-nlp/bert-base-japanese-whole-word-masking"
+        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking", # 修正: 正しいリポジトリ名
+        tokenizer_file: str = "tokenizer_model.json" # 追加: 実際のファイル名を指定
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = os.path.join(self.base_dir, "data")
@@ -141,8 +142,8 @@ class PathsConfig:
         self.dataset_name = dataset_name
         self.dataset_subset = dataset_subset
         self.tokenizer_name = tokenizer_name
-        # self.tokenizer_path = os.path.join(self.checkpoint_dir, "tokenizers", "tokenizer.model")
-        
+        self.tokenizer_file = tokenizer_file  # 追加: ファイル名を保存
+    
     @property
     def dataset_dir(self) -> str:
         """データセットの保存ディレクトリパスを返します"""
@@ -153,7 +154,7 @@ class PathsConfig:
     @property
     def tokenizer_path(self) -> str:
         """トークナイザーモデルのパスを返します"""
-        return os.path.join(self.checkpoint_dir, "tokenizers", "tokenizer.model")
+        return os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_file)
         
     @property
     def model_save_dir(self) -> str:
