@@ -68,13 +68,13 @@ def main():
             valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
             
             # テスト用にデータセットの小さなサブセットを作成
-            dataset_sizes = [20000]  # テスト用のデータセットサイズ
+            dataset_sizes = [len(train_dataset)]  # テスト用のデータセットサイズ
             
             print(f"元のデータセットサイズ - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
             
             # デフォルトサブセットを準備（最小サイズで）
             train_subset = train_dataset.select(range(min(dataset_sizes[0], len(train_dataset))))
-            valid_subset = valid_dataset.select(range(min(dataset_sizes[0]//10, len(valid_dataset))))
+            valid_subset = valid_dataset.select(range(min(dataset_sizes[0]//10000, len(valid_dataset))))
             
             print(f"テスト用サブセットサイズ - 学習: {len(train_subset)}件, 検証: {len(valid_subset)}件")
             
