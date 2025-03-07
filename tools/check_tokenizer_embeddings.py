@@ -51,6 +51,7 @@ def check_tokenizer(tokenizer):
         
         # デコード
         decoded = tokenizer.decode(ids) if hasattr(tokenizer, 'decode') else tokenizer.decode(ids)
+        decoded = decoded.replace(" ", "")
         print(f"デコード結果: {decoded}")
         
         # エンコード→デコードの一貫性チェック
