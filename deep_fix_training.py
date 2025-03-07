@@ -96,7 +96,7 @@ def main():
         # 実験ループ
         for model_idx, model_config in enumerate(model_configs):
             print(f"\n=== モデル構成 {model_idx+1}/{len(model_configs)} ===")
-            print(f"hidden_size: {model_config.hidden_size}, layers: {model_config.num_layers}, norm: {model_config.norm_scheme}")
+            print(f"hidden_size: {model_config.hidden_size}, layers: {model_config.num_layers}")
             
             # トークナイザー設定（直接AutoTokenizerオブジェクトを設定）
             model_config.set_tokenizer(tokenizer)
