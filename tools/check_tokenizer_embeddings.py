@@ -13,6 +13,7 @@ import numpy as np
 from transformers import AutoTokenizer
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+from datasets import load_from_disk
 
 # 親ディレクトリをパスに追加してslmモジュールをインポートできるようにする
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,19 +22,51 @@ from slm.config import ModelConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.utils import load_checkpoint
 
-def check_tokenizer(tokenizer):
-    """トークナイザーの動作確認を実行"""
+def get_text_field(dataset):
+    """データセットからテキストフィールドを特定して取得"""
+    # サンプル項目を取得して検査
+    sample_item = dataset[0]
+    print(f"データセットの項目構造: {list(sample_item.keys())}")
+    
+    # 一般的なテキストフィールド名をチェック
+    possible_text_fields = ['text', 'content', 'sentence', 'document', 'input_text']
+    text_field = None
+    
+    for field in possible_text_fields:
+        if field in sample_item:
+            text_field = field
+            break
+    
+    # テキストフィールドが見つからない場合、文字列型の最初のフィールドを使用
+    if not text_field:
+        for field, value in sample_item.items():
+            if isinstance(value, str) and len(value) > 10:  # ある程度の長さがある文字列フィールド
+                text_field = field
+                break
+    
+    if not text_field:
+        raise ValueError("データセットに適切なテキストフィールドが見つかりません")
+        
+    print(f"使用するテキストフィールド: '{text_field}'")
+    return text_field
+
+def check_tokenizer(tokenizer, dataset):
+    """トークナイザーの動作確認を実行 - データセットからテキストを使用"""
     print("=== トークナイザー動作確認 ===")
     print(f"トークナイザークラス: {tokenizer.__class__.__name__}")
     print(f"語彙サイズ: {tokenizer.vocab_size}")
     
-    # サンプルテキスト
-    sample_texts = [
-        "これはテスト文です。",
-        "自然言語処理は面白いです。",
-        "人工知能と機械学習について学んでいます。",
-        "王様と女王様が王宮でパーティーを開きました。"
-    ]
+    # データセットからテキストフィールドを特定
+    text_field = get_text_field(dataset)
+    
+    # データセットからサンプルテキストを取得（最大5つ）
+    sample_indices = np.random.choice(len(dataset), min(5, len(dataset)), replace=False)
+    sample_texts = [dataset[idx][text_field] for idx in sample_indices]
+    
+    # 長すぎるテキストは短く切り詰める
+    sample_texts = [text[:100] + ('...' if len(text) > 100 else '') for text in sample_texts]
+    
+    print(f"\n{len(sample_texts)}個のサンプルテキストをデータセットから抽出しました")
     
     for text in sample_texts:
         print("\n----")
@@ -42,23 +75,36 @@ def check_tokenizer(tokenizer):
         # トークン化
         tokens = tokenizer.tokenize(text) if hasattr(tokenizer, 'tokenize') else None
         if tokens:
-            print(f"トークン: {tokens}")
+            # トークンが多い場合は最初の20個だけ表示
+            display_tokens = tokens[:20]
+            if len(tokens) > 20:
+                display_tokens.append("...")
+            print(f"トークン: {display_tokens}")
         
         # エンコード
         ids = tokenizer.encode(text, add_special_tokens=False) \
-            if hasattr(tokenizer, 'encode') else tokenizer(text).input_ids
-        print(f"ID: {ids}")
+            if hasattr(tokenizer, 'encode') else tokenizer(text, add_special_tokens=False).input_ids
+        
+        # IDが多い場合は最初の20個だけ表示
+        display_ids = ids[:20]
+        if len(ids) > 20:
+            display_ids.append(999)  # 省略記号の代わり
+        print(f"ID: {display_ids}")
         
         # デコード
         decoded = tokenizer.decode(ids) if hasattr(tokenizer, 'decode') else tokenizer.decode(ids)
-        decoded = decoded.replace(" ", "")
-        print(f"デコード結果: {decoded}")
+        # スペースを削除して比較
+        decoded_no_space = decoded.replace(" ", "")
+        print(f"デコード結果: {decoded[:100]}")
         
         # エンコード→デコードの一貫性チェック
-        if text == decoded:
+        if text == decoded_no_space:
             print("✓ エンコード→デコードの一貫性: 完全一致")
         else:
-            print(f"× エンコード→デコードの一貫性: 不一致\n  原文: {text}\n  復元: {decoded}")
+            # 先頭100文字だけ比較して表示
+            print(f"× エンコード→デコードの一貫性: 不一致")
+            print(f"  原文(先頭100文字): {text[:100]}")
+            print(f"  復元(先頭100文字): {decoded_no_space[:100]}")
 
 def analyze_embeddings(model, tokenizer):
     """単語埋め込みの分析"""
@@ -172,6 +218,38 @@ def main():
     paths_config = PathsConfig()
     model_config = ModelConfig()
     
+    # データセットの読み込み
+    print("データセットを読み込み中...")
+    dataset_path = os.path.join(paths_config.data_dir, "valid_dataset")
+    if not os.path.exists(dataset_path):
+        dataset_path = os.path.join(paths_config.data_dir, "train_dataset")
+    
+    try:
+        dataset = load_from_disk(dataset_path)
+        print(f"データセット読み込み完了: {dataset_path}")
+        print(f"データセットサイズ: {len(dataset)}件")
+    except Exception as e:
+        print(f"データセットの読み込みに失敗しました: {e}")
+        print("サンプルテキストを使用して続行します。")
+        # ダミーデータセット作成（辞書のリスト）
+        class DummyDataset:
+            def __init__(self, texts):
+                self.texts = [{"text": t} for t in texts]
+                
+            def __getitem__(self, idx):
+                return self.texts[idx]
+                
+            def __len__(self):
+                return len(self.texts)
+        
+        sample_texts = [
+            "これはテスト文です。",
+            "自然言語処理は面白いです。",
+            "人工知能と機械学習について学んでいます。",
+            "王様と女王様が王宮でパーティーを開きました。"
+        ]
+        dataset = DummyDataset(sample_texts)
+    
     # トークナイザー読み込み（AutoTokenizerを直接使用）
     print("トークナイザーを読み込み中...")
     try:
@@ -182,8 +260,8 @@ def main():
         print(f"トークナイザーの読み込みに失敗しました: {e}")
         return
     
-    # トークナイザーの動作確認（モデルがなくても実行可能）
-    check_tokenizer(tokenizer)
+    # トークナイザーの動作確認（データセットのテキストを使用）
+    check_tokenizer(tokenizer, dataset)
     
     # 埋め込み分析はモデルが必要なため、チェックポイントが存在する場合のみ実行
     checkpoint_path = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
