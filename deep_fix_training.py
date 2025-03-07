@@ -23,6 +23,9 @@ from slm.debug_wave import WaveDebugger
 from slm.collator import CustomCollator
 from slm.inference import sample_text
 
+# 追加: 環境変数の設定
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 # 追加: 超小規模データセット作成関数
 def create_micro_dataset(dataset, size=100, vocab_size=1000):
     """超小規模データセットを作成して問題の再現性を確認"""
@@ -70,9 +73,12 @@ def create_micro_dataset(dataset, size=100, vocab_size=1000):
     
     return micro_data
 
-# 追加: 複素数初期化関数
-def initialize_complex_parameters(model, scale=0.02):
-    """複素数パラメータの特殊初期化"""
+# 修正: 複素数初期化関数 - パラメータをconfigから取得するように
+def initialize_complex_parameters(model):
+    """複素数パラメータの特殊初期化 - configから初期化パラメータを取得"""
+    # configからスケール値を取得
+    scale = getattr(model.config, 'complex_init_scale', 0.02)
+    
     for name, param in model.named_parameters():
         if 'weight' in name:
             if 'embedding' in name:
@@ -81,11 +87,10 @@ def initialize_complex_parameters(model, scale=0.02):
                 nn.init.constant_(param, 1.0)
             elif 'wave' in name or 'complex' in name:
                 # 複素数パラメータ用の特殊初期化
-                # 絶対値と位相を分けて初期化
                 with torch.no_grad():
                     # 実部と虚部を個別に初期化
                     if param.dim() >= 2:
-                        # 複素数行列の特殊初期化
+                        # 複素数行列の特殊初期化 - configから取得したスケール値を使用
                         nn.init.uniform_(param, -scale, scale)
                         
                         # 位相をより均一に分布させる工夫
@@ -94,11 +99,13 @@ def initialize_complex_parameters(model, scale=0.02):
                     else:
                         nn.init.zeros_(param)
             elif 'classifier' in name:
-                # 出力層は非常に小さく初期化
-                nn.init.normal_(param, mean=0.0, std=0.001)
+                # 出力層は非常に小さく初期化 - スケールに基づいて調整
+                classifier_scale = scale * 0.05  # 出力層は特に小さく
+                nn.init.normal_(param, mean=0.0, std=classifier_scale)
             else:
                 # 一般的な重み行列はXavier初期化
-                nn.init.xavier_uniform_(param, gain=0.1)
+                gain = getattr(model.config, 'xavier_gain', 0.1)
+                nn.init.xavier_uniform_(param, gain=gain)
         elif 'bias' in name:
             nn.init.zeros_(param)
 
@@ -159,6 +166,10 @@ def main():
     # 設定
     paths_config = PathsConfig()
     
+    # ディレクトリ作成
+    deep_fix_dir = os.path.join(paths_config.checkpoint_dir, "deep_fix_model")
+    os.makedirs(deep_fix_dir, exist_ok=True)
+    
     # モデル設定: 複数のモデルサイズを試す
     model_configs = [
         # 超小型モデル（問題切り分け用）
@@ -173,156 +184,131 @@ def main():
         # 小型モデル
         ModelConfig(
             hidden_size=256,    # 小さいモデルサイズ
-            num_layers=2,       # 少ないレイヤー数
-            max_seq_len=128,    # 短いシーケンス
-            dropout_prob=0.0,   # まずドロップアウトをなしで試す
-            use_rope=True,      # 位置エンコーディングは必須
-            norm_scheme="post"  # Post-LN方式も試す
+            num_layers=2,       
+            max_seq_len=128,    
+            dropout_prob=0.0,   
+            use_rope=True,      
+            norm_scheme="post"  
         ),
     ]
     
-    # 複数のトレーニング設定を試す
+    # 追加: データセットサイズ変数
+    dataset_sizes = [100, 1000, 10000]  # 小さい順にテスト
+    
+    # 追加: トレーニング設定
     training_configs = [
-        # 安定性重視の設定
+        # 安定性重視
         TrainingConfig(
-            learning_rate=5e-5,     # 小さな学習率
-            batch_size=8,           # 小さなバッチサイズ
-            mlm_epochs=15,          # より多くのエポック
-            mlm_probability=0.15,   # 標準的なマスク率
-            weight_decay=0.01,      # 適度なウェイト減衰
-            warmup_steps=500,       # 長めのウォームアップ
-            accumulation_steps=4,   # 勾配累積
-            use_amp=False,          # AMP無効（数値安定性のため）
-            clip_value=1.0,         # 強い勾配クリッピング
+            learning_rate=1e-5,
+            batch_size=16,
+            mlm_epochs=3,
+            mlm_probability=0.15,
+            weight_decay=0.01,
+            clip_value=1.0
         ),
-        # 探索的な設定
+        # 学習速度重視
         TrainingConfig(
-            learning_rate=2e-4,     # 大きめの学習率
-            batch_size=16,          # 標準的なバッチサイズ
-            mlm_epochs=10,          # 標準的なエポック数
-            mlm_probability=0.15,   # 標準的なマスク率
-            weight_decay=0.0,       # ウェイト減衰なし
-            warmup_steps=100,       # 短いウォームアップ
-            accumulation_steps=1,   # 勾配累積なし
-            use_amp=False,          # AMP無効
-            clip_value=5.0,         # 緩い勾配クリッピング
+            learning_rate=5e-5,
+            batch_size=32,
+            mlm_epochs=2,
+            mlm_probability=0.15,
+            weight_decay=0.01,
+            clip_value=0.5
         ),
     ]
-    
-    # ディレクトリ準備
-    deep_fix_dir = os.path.join(paths_config.checkpoint_dir, "deep_fix_model")
-    os.makedirs(deep_fix_dir, exist_ok=True)
-    os.makedirs(os.path.join(paths_config.log_dir, "wave_debug"), exist_ok=True)
     
     try:
-        if device.type != "cuda":
-            print("このスクリプトはGPU環境で実行してください。")
+        # データセット読み込み
+        print("データセットをロード中...")
+        try:
+            train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
+            valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
+        except:
+            print("既存のデータセットが見つかりません。CPU環境での前処理が必要です。")
             sys.exit(1)
         
-        print("=== 抜本修正版学習を実行します ===")
+        # トークナイザー読み込み
+        print("トークナイザーをロード中...")
+        try:
+            # 保存済みトークナイザーを使用
+            if os.path.exists(paths_config.tokenizer_path):
+                from slm.tokenizer import JapaneseTokenizer
+                tokenizer = JapaneseTokenizer(model_file=paths_config.tokenizer_path)
+            else:
+                # AutoTokenizerをフォールバックとして使用
+                tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
+        except Exception as e:
+            print(f"トークナイザー読み込みエラー: {e}")
+            sys.exit(1)
+            
+        print(f"データセットサイズ: {len(train_dataset)}")
         
-        # データセット読み込み
-        train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
-        valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
+        # テスト用のバッチを取得（勾配フロー解析用）
+        collator = CustomCollator(
+            tokenizer=tokenizer, 
+            model_config=model_configs[0],
+            mlm=True,
+            mlm_probability=0.15,
+            mask_token_id=tokenizer.mask_token_id if hasattr(tokenizer, 'mask_token_id') else 4
+        )
+        test_batch = next(iter(DataLoader(
+            train_dataset.select(range(5)), 
+            batch_size=2, 
+            collate_fn=collator
+        )))
+        input_ids = test_batch["input_ids"].to(device)
+        labels = test_batch["labels"].to(device)
         
-        print(f"元のデータセットサイズ: {len(train_dataset)}")
-        
-        # 段階的なデータセット切り分け
-        dataset_sizes = [100, 1000, 10000]
-        
-        # Tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
-        
-        # 各モデル構成で実験
+        # 実験ループ
         for model_idx, model_config in enumerate(model_configs):
-            model_config.set_tokenizer(tokenizer)
-            print(f"\n=== モデル構成 {model_idx+1}/{len(model_configs)} を検証 ===")
+            print(f"\n=== モデル構成 {model_idx+1}/{len(model_configs)} ===")
             print(f"hidden_size: {model_config.hidden_size}, layers: {model_config.num_layers}, norm: {model_config.norm_scheme}")
             
-            # 各データセットサイズで実験
+            # トークナイザー設定
+            model_config.set_tokenizer(tokenizer)
+            
             for dataset_size in dataset_sizes:
                 print(f"\n--- データセットサイズ: {dataset_size} ---")
                 
-                # データセット準備
-                train_dataset_small = train_dataset.select(range(min(dataset_size, len(train_dataset))))
-                valid_dataset_small = valid_dataset.select(range(min(dataset_size//10, len(valid_dataset))))
+                # データセットの部分集合を作成
+                curr_train = train_dataset.select(range(min(dataset_size, len(train_dataset))))
+                curr_valid = valid_dataset.select(range(min(dataset_size // 10, len(valid_dataset))))
                 
-                # 超小規模テスト用のデータセットも準備
-                micro_dataset = create_micro_dataset(train_dataset, size=100)
-                
-                # モデル初期化
-                model = WaveNetworkLM(model_config)
-                
-                # 複素数パラメータの特別初期化
-                initialize_complex_parameters(model, scale=0.01)
-                
-                # 各トレーニング設定で実験
                 for train_idx, training_config in enumerate(training_configs):
-                    print(f"\n-- トレーニング設定 {train_idx+1}/{len(training_configs)} --")
-                    print(f"学習率: {training_config.learning_rate}, バッチサイズ: {training_config.batch_size}")
+                    print(f"\n* 学習設定 {train_idx+1}/{len(training_configs)} *")
+                    print(f"lr: {training_config.learning_rate}, batch: {training_config.batch_size}, clip: {training_config.clip_value}")
                     
-                    # モデルをデバイスに移動
+                    # モデル初期化
+                    model = WaveNetworkLM(model_config)
+                    # 修正: 特殊初期化適用 - パラメータを渡さずconfigから取得
+                    initialize_complex_parameters(model)
                     model.to(device)
                     
                     # トレーナー初期化
                     trainer = Trainer(
                         model=model,
-                        train_dataset=train_dataset_small,
-                        valid_dataset=valid_dataset_small,
+                        train_dataset=curr_train,
+                        valid_dataset=curr_valid,
                         training_config=training_config,
-                        device=device,
-                        paths_config=paths_config
+                        paths_config=paths_config,
+                        device=device
                     )
                     
-                    # 勾配クリッピング設定
-                    trainer.clip_value = training_config.clip_value
+                    # 修正: training_configから勾配クリップ値を設定
+                    if hasattr(training_config, 'clip_value'):
+                        trainer.clip_value = training_config.clip_value
                     
-                    # 事前分析: 勾配フロー
-                    print("初期状態での勾配フロー分析...")
-                    collator = CustomCollator(
-                        tokenizer=tokenizer,
-                        model_config=model_config,
-                        mlm=True,
-                        mlm_probability=training_config.mlm_probability,
-                        mask_token_id=tokenizer.mask_token_id,
-                        qa=False
-                    )
-                    
-                    dataloader = DataLoader(
-                        train_dataset_small.select(range(min(5, len(train_dataset_small)))),
-                        batch_size=1,
-                        shuffle=False,
-                        collate_fn=collator
-                    )
-                    
-                    batch = next(iter(dataloader))
-                    input_ids = batch["input_ids"].to(device)
-                    labels = batch["labels"].to(device)
-                    
+                    # 勾配フロー解析（学習前）
                     grad_stats, loss = analyze_gradient_flow(model, input_ids, labels)
+                    print(f"学習前の損失: {loss:.4f}")
+                    print("勾配統計（学習前）:")
+                    for i, (name, stats) in enumerate(grad_stats.items()):
+                        if i < 3:  # 全部出すと長いので最初の3つだけ
+                            print(f"  {name}: norm={stats['norm']:.4f}, min={stats['min']:.4f}, max={stats['max']:.4f}")
+                            if stats['has_nan']:
+                                print(f"  警告: 層 {name} に NaN が含まれています!")
                     
-                    # 勾配問題の検出
-                    has_grad_problems = False
-                    for name, stats in grad_stats.items():
-                        if stats['has_nan'] or stats['has_inf'] or stats['norm'] > 10.0:
-                            has_grad_problems = True
-                            print(f"  警告: {name}の勾配に問題があります。norm={stats['norm']:.4f}")
-                    
-                    # 問題がある場合はスケールダウン
-                    if has_grad_problems:
-                        print("  勾配に問題があるため、初期学習率を0.1倍に調整します")
-                        for param_group in trainer.optimizer.param_groups:
-                            param_group['lr'] *= 0.1
-                    
-                    # 波表現の診断
-                    print("波表現の診断...")
-                    wave_stats = WaveDebugger.check_wave_representation(
-                        model, 
-                        input_ids, 
-                        save_path=os.path.join(paths_config.log_dir, "wave_debug", f"wave_repr_m{model_idx}_t{train_idx}_d{dataset_size}.png")
-                    )
-                    
-                    # 生成テキスト評価（学習前）
+                    # 学習前の生成テキスト評価
                     print("学習前の生成テキスト評価:")
                     prompt = "これは"
                     generated = evaluate_generated_text(model, tokenizer, prompt, max_len=20, device=device)
@@ -334,8 +320,12 @@ def main():
                     
                     # 結果評価
                     print("学習結果:")
-                    min_loss = min([log['loss'] for log in history])
-                    print(f"  最小ロス: {min_loss:.4f}")
+                    # historyがエポック別の損失を含むリストや辞書でない場合の対応
+                    if history:
+                        min_loss = min([log['loss'] for log in history]) if isinstance(history[0], dict) else min(history)
+                        print(f"  最小ロス: {min_loss:.4f}")
+                    else:
+                        print("  学習履歴が記録されていません")
                     
                     # 生成テキスト評価（学習後）
                     print("学習後の生成テキスト評価:")
@@ -377,8 +367,19 @@ def main():
         best_model_config = model_configs[-1]  # 最大のモデルを選択
         best_training_config = training_configs[0]  # 安定性重視の設定を選択
         
-        print(f"選択したモデル構成: hidden_size={best_model_config.hidden_size}, layers={best_model_config.num_layers}")
-        print(f"選択したトレーニング設定: lr={best_training_config.learning_rate}, batch={best_training_config.batch_size}")
+        # 修正: より詳細な設定情報表示
+        print(f"選択したモデル構成:")
+        print(f"  hidden_size: {best_model_config.hidden_size}")
+        print(f"  num_layers: {best_model_config.num_layers}")
+        print(f"  norm_scheme: {best_model_config.norm_scheme}")
+        print(f"  dropout_prob: {best_model_config.dropout_prob}")
+        
+        print(f"選択したトレーニング設定:")
+        print(f"  learning_rate: {best_training_config.learning_rate}")
+        print(f"  batch_size: {best_training_config.batch_size}")
+        print(f"  mlm_epochs: {best_training_config.mlm_epochs}")
+        print(f"  clip_value: {best_training_config.clip_value}")
+        print(f"  weight_decay: {best_training_config.weight_decay}")
         
         # データセット準備（より大きなサイズ）
         train_dataset_full = train_dataset.select(range(min(100000, len(train_dataset))))
@@ -387,8 +388,14 @@ def main():
         
         # 最終モデル初期化
         best_model_config.set_tokenizer(tokenizer)
+        
+        # 修正: 最終モデル設定のパラメータ微調整
+        # 最終モデル用に適切な値を設定
+        best_model_config.complex_init_scale = 0.01  # 最終モデル用に小さめの初期化スケール
         final_model = WaveNetworkLM(best_model_config)
-        initialize_complex_parameters(final_model, scale=0.01)
+        
+        # 修正: パラメータをconfigから取得
+        initialize_complex_parameters(final_model)
         final_model.to(device)
         
         # 最終トレーナー
@@ -406,8 +413,13 @@ def main():
         final_history = final_trainer.train_mlm(num_epochs=best_training_config.mlm_epochs)
         
         # 結果評価と保存
-        min_loss = min([log['loss'] for log in final_history])
-        print(f"最終最小ロス: {min_loss:.4f}")
+        if final_history:
+            if isinstance(final_history, list):
+                if isinstance(final_history[0], dict):
+                    min_loss = min([log['loss'] for log in final_history])
+                else:
+                    min_loss = min(final_history)
+                print(f"最終最小ロス: {min_loss:.4f}")
         
         final_trainer.save_checkpoint("deep_fix_model/final_model")
         print(f"最終モデルを保存しました: {os.path.join(deep_fix_dir, 'final_model.pt')}")

@@ -15,7 +15,7 @@ from datasets import load_from_disk
 from transformers import AutoTokenizer
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
-from slm2.enhanced_wave_network import EnhancedWaveNetworkLM
+from slm.modules.wave_network import WaveNetworkLM
 from slm.trainer import Trainer
 from slm.collator import CustomCollator
 
@@ -72,8 +72,8 @@ def main():
         
         print(f"元のデータセットサイズ: {len(train_dataset)}")
         # 学習用サブセット
-        train_subset = train_dataset.select(range(min(100000, len(train_dataset))))
-        valid_subset = valid_dataset.select(range(min(5000, len(valid_dataset))))
+        train_subset = train_dataset.select(range(min(5000, len(train_dataset))))
+        valid_subset = valid_dataset.select(range(min(50, len(valid_dataset))))
         print(f"使用データセットサイズ: {len(train_subset)}")
         
         # Tokenizer
@@ -81,7 +81,7 @@ def main():
         model_config.set_tokenizer(tokenizer)
         
         # 強化版モデルの初期化
-        model = EnhancedWaveNetworkLM(model_config)
+        model = WaveNetworkLM(model_config)
         print(f"モデルパラメータ数: {sum(p.numel() for p in model.parameters()) / 1000000:.2f}M")
         
         # 初期化の調整
