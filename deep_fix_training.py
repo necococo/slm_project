@@ -28,14 +28,45 @@ def create_micro_dataset(dataset, size=100, vocab_size=1000):
     """超小規模データセットを作成して問題の再現性を確認"""
     micro_data = dataset.select(range(min(size, len(dataset))))
     
-    # さらに語彙を制限した超小規模タスク用にフィルタリング
-    # これにより、モデル容量と問題との関係を見る
-    filtered_data = []
-    for item in micro_data:
-        filtered_text = ' '.join([w for w in item['text'].split() 
-                                if len(filtered_data) < size])
-        if filtered_text:
-            filtered_data.append({'text': filtered_text})
+    # データセット構造を確認
+    if len(micro_data) > 0:
+        sample_item = micro_data[0]
+        print(f"データセット構造: {list(sample_item.keys())}")
+        
+        # テキストフィールドの検出（一般的な名前をチェック）
+        text_key = None
+        possible_keys = ['text', 'content', 'input_text', 'sentence', 'context', 'document']
+        for key in possible_keys:
+            if key in sample_item:
+                text_key = key
+                break
+        
+        # テキストフィールドが見つからない場合は最初のstring型フィールドを使用
+        if text_key is None:
+            for key, value in sample_item.items():
+                if isinstance(value, str) and len(value) > 0:
+                    text_key = key
+                    break
+        
+        print(f"テキストフィールドとして使用するキー: {text_key}")
+        
+        if text_key:
+            # 語彙を制限した超小規模タスク用にフィルタリング
+            filtered_data = []
+            for item in micro_data:
+                if text_key in item and isinstance(item[text_key], str):
+                    filtered_text = ' '.join([w for w in item[text_key].split() 
+                                        if len(filtered_data) < size])
+                    if filtered_text:
+                        filtered_item = {key: val for key, val in item.items()}
+                        filtered_item[text_key] = filtered_text
+                        filtered_data.append(filtered_item)
+            
+            # データセットタイプに合わせて返す
+            from datasets import Dataset
+            return Dataset.from_list(filtered_data)
+        else:
+            print("警告: テキストデータを含むフィールドが見つかりませんでした。元のデータセットをそのまま返します。")
     
     return micro_data
 
