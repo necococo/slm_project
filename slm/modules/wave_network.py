@@ -70,25 +70,29 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     
     return real_part, imag_part
 
-class WaveLayer(nn.Module):
+class SingleWaveLayer(nn.Module):
     """
     Wave Network Layer の実装 (Fig.6(a))
+    論文の図6(a)に忠実に従った実装
     """
     def __init__(self, hidden_size: int, dropout_prob: float = 0.1):
         super().__init__()
         self.hidden_size = hidden_size
         
-        # Feed Forward Network - 効率的なGatedMLPを使用
-        self.ffn = GatedMLP(hidden_size * 2)
+        # 論文の図6ではFFNが波表現空間で処理を行っている
+        # 波表現は2*hidden_sizeの次元を持つ
+        expansion_factor = 4
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size * 2 * expansion_factor),
+            nn.GELU(),
+            nn.Linear(hidden_size * 2 * expansion_factor, hidden_size * 2)
+        )
         
-        # Normalization layers
-        self.ffn_norm = RMSNorm(hidden_size * 2)
-        
-        # Projection back to original dimension
-        self.proj = nn.Linear(hidden_size * 2, hidden_size)
-        self.dropout = nn.Dropout(dropout_prob)
-        self.final_norm = RMSNorm(hidden_size)
-        
+        # 論文の図6(a)では明示的なノーマライゼーションは表示されていない
+        # ただし、波表現から元の埋め込み空間への変換が示されている
+        self.to_embedding = nn.Linear(hidden_size * 2, hidden_size)
+        self.norm = RMSNorm(hidden_size)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Wave Layer forward pass
@@ -97,7 +101,7 @@ class WaveLayer(nn.Module):
             x: 入力テンソル [B, S, D]
             
         Returns:
-            処理された出力テンソル [B, S, D]
+            output: 処理後のテンソル [B, S, D]
         """       
         B, S, D = x.shape
         eps = 1e-5
@@ -105,7 +109,6 @@ class WaveLayer(nn.Module):
         # NaN対策
         if torch.isnan(x).any():
             print("Warning: NaNs in input, replacing with zeros")
-            # x = torch.nan_to_num(x, nan=0.0)
         
         # 文レベルのwave表現 (グローバルコンテキスト)
         real_sen, imag_sen = compute_wave_representation(x, global_mode=True, eps=eps)
@@ -114,29 +117,25 @@ class WaveLayer(nn.Module):
         real_token, imag_token = compute_wave_representation(x, global_mode=False, eps=eps)
         
         # 波の干渉（加算）- Fig.6(a)の中央部分
-        # (a+bi) + (c+di) = (a+c) + (b+d)i
         combined_real = real_sen + real_token
         combined_imag = imag_sen + imag_token
         
         # 結合波表現
         wave_repr = torch.cat([combined_real, combined_imag], dim=-1)  # [B, S, 2D]
         
-        # FFN処理
-        ffn_out = self.ffn(wave_repr)
-        wave_repr = self.ffn_norm(wave_repr + ffn_out)  # 残差接続
+        # FFN処理 - 論文の図6(a)に従い波表現空間で処理
+        wave_repr = self.ffn(wave_repr)  # [B, S, 2D]
         
-        # 元の次元に戻す
-        output = self.proj(wave_repr)  # [B, S, D]
-        output = output + wave_repr[..., :D]  # 残差接続（前半部分のみ）
-        
-        output = self.dropout(output)
-        output = self.final_norm(output)
-        
+        # 波表現から埋め込み空間への変換（図6(a)最後のステップ）
+        output = self.to_embedding(wave_repr)  # [B, S, D]
+        output = self.norm(output)
+
         return output
 
 class WaveNetworkBlock(nn.Module):
     """
     Wave Network Block の実装 (Fig.6(b))
+    論文の図6(b)に忠実に従った実装
     """
     def __init__(
         self, 
@@ -149,16 +148,15 @@ class WaveNetworkBlock(nn.Module):
         self.hidden_size = hidden_size
         self.use_rope = use_rope
         
-        # Wave Layer
-        self.wave_layer = WaveLayer(hidden_size, dropout_prob)
+        # Wave Layer - 波表現処理のみ
+        self.wave_layer = SingleWaveLayer(hidden_size, dropout_prob)
         
         # RoPE (オプション)
-        if use_rope:
+        if self.use_rope:
             self.rope = RoPEEmbedding(hidden_size, max_seq_len)
-        
-        # 残差接続とノーマライゼーション
+                
+        # 残差接続後の処理
         self.dropout = nn.Dropout(dropout_prob)
-        self.norm = RMSNorm(hidden_size)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -170,24 +168,21 @@ class WaveNetworkBlock(nn.Module):
         Returns:
             処理された出力テンソル [B, S, D]
         """
-        # RoPE位置エンコーディングを適用（オプション）
+        # RoPE位置エンコーディングを適用（各層で適用）
         if self.use_rope:
-            # RoPEを適用する前に適切な形状に変換
             B, S, D = x.shape
-            x_4d = x.view(B, S, 1, D)  # [B, S, 1, D]
-            x_4d_rope = self.rope(x_4d)
-            x_rope = x_4d_rope.view(B, S, D)
-            wave_input = x_rope
+            x_4d = x.view(B, S, 1, D)  # [B, S, 1, D] - RoPE用に形状変更
+            x_4d_rope = self.rope(x_4d)  # RoPE適用 - 次元保存 [B, S, 1, D]
+            wave_input = x_4d_rope.view(B, S, D)  # 元の形状に戻す [B, S, D]
         else:
             wave_input = x
         
-        # Wave Layer処理
-        wave_output = self.wave_layer(wave_input)
+        # 1. Wave Layer処理
+        wave_output = self.wave_layer(wave_input)  # [B, S, D]
         
-        # 残差接続
-        output = x + self.dropout(wave_output)
-        output = self.norm(output)
-
+        # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
+        output = self.dropout(x + wave_output)
+        
         return output
 
 class WaveNetworkLM(nn.Module):
@@ -211,17 +206,12 @@ class WaveNetworkLM(nn.Module):
         # トークン埋め込み　nanが多発するので精緻な計算をするためfloat32にしておく
         self.token_embedding = nn.Embedding(vocab_size, hidden_size, dtype=torch.float32)
         
-        # RoPEを最初に一度だけ適用する設計に変更
-        self.use_rope = use_rope
-        if use_rope:
-            self.rope = RoPEEmbedding(hidden_size, max_seq_len)
-        
-        # Wave Network Blocksのスタック - RoPEなしの設定に
+        # Wave Network Blocksのスタック - 各レイヤーでRoPEを使用する設定
         self.layers = nn.ModuleList([
             WaveNetworkBlock(
                 hidden_size=hidden_size,
                 dropout_prob=dropout_prob,
-                use_rope=False,  # 各レイヤーではRoPEを使わない
+                use_rope=use_rope,  # configから取得した設定値を使用
                 max_seq_len=max_seq_len
             ) for _ in range(num_layers)
         ])
@@ -255,14 +245,7 @@ class WaveNetworkLM(nn.Module):
         # トークン埋め込み
         hidden_states = self.token_embedding(input_ids)
         
-        # RoPEを最初に一度だけ適用
-        if self.use_rope:
-            B, S, D = hidden_states.shape
-            x_4d = hidden_states.view(B, S, 1, D)
-            x_4d_rope = self.rope(x_4d)
-            hidden_states = x_4d_rope.view(B, S, D)
-
-        # 各レイヤーを通過（RoPEなしで）
+        # 各レイヤーを通過（各レイヤーでRoPEを適用）
         for layer in self.layers:
             hidden_states = layer(hidden_states)
             

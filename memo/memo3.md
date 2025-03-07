@@ -1,16 +1,5 @@
-以下の論文を組み合わせた理論を考えたい。
 
-[Wave Network: An Ultra-Small Language Model](https://arxiv.org/html/2411.02674v4)
-[Cut Your Losses in Large-Vocabulary Language Models](https://arxiv.org/html/2411.09009v1), (https://pypi.org/project/cut-cross-entropy/)
 
-[RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864)
-[From Word Models to World Models: Translating from Natural Language to the Probabilistic Language of Thought](https://arxiv.org/pdf/2306.12672)
-[Large Language Diffusion Models](https://arxiv.org/pdf/2306.12672)
-[WorldGPT: Empowering LLM as Multimodal World Model](https://arxiv.org/html/2404.18202v2)
-[WaveletGPT: Wavelets Meet Large Language Models](https://arxiv.org/abs/2409.12924)
-[WavSpA: Wavelet Space Attention for Boosting Transformers' Long Sequence Learning Ability](https://arxiv.org/pdf/2210.01989)
-[Native Sparse Attention: Hardware-Aligned and Natively Trainable Sparse Attention](https://arxiv.org/abs/2502.11089)
-[Titans: Learning to Memorize at Test Time](https://arxiv.org/html/2501.00663v1) # google deepmild 長期記憶をもたせる
 
 
 モデルにはコンテキスト長の制限があるため、文書全体がその制限を超える場合は「チャンクに分割して要約をつなぐ」「Retrievalで必要な箇所を取り出す」「長コンテキスト対応モデルを使う」といった手法が用いられる。
@@ -313,3 +302,5 @@ JSQuADの場合は文脈が与えられる抽出型QAなのでそこまで必須
 WavSpAは、波形空間の注目メカニズムを使って多次元表現を学習し、長期依存関係を捉えている。
 
 WavSpA: Wavelet Space Attention for Boosting Transformers' Long Sequence Learning Ability
+
+

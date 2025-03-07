@@ -19,6 +19,9 @@ class ModelConfig:
         use_rope: RoTary Position Embeddingを使うかどうか
         use_wavelet: Wavelet変換を使用するかどうか (True/False)
         wavelet_name: PyWaveletsで使用するWaveletの名称 (例: 'haar', 'db1', 'db2'など)
+        norm_scheme: 'pre'または'post'のLayerNorm方式を選択
+        activation: 活性化関数の選択
+        complex_init_scale: 複素数初期化のスケール
     """
     def __init__(
         self,
@@ -30,6 +33,9 @@ class ModelConfig:
         use_rope: bool = True,
         use_wavelet: bool = False,
         wavelet_name: Optional[str] = None,
+        norm_scheme: str = "post",  # 追加: 'pre'または'post'のLayerNorm方式を選択
+        activation: str = "gelu",   # 追加: 活性化関数の選択
+        complex_init_scale: float = 0.02,  # 追加: 複素数初期化のスケール
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -40,6 +46,9 @@ class ModelConfig:
         self.use_wavelet = use_wavelet
         self.wavelet_name = wavelet_name
         self.tokenizer = None  # トークナイザーを後から設定可能に
+        self.norm_scheme = norm_scheme  # 追加: Pre-LN vs Post-LN
+        self.activation = activation  # 追加: 活性化関数
+        self.complex_init_scale = complex_init_scale  # 追加: 複素数初期化スケール
     
     @property
     def vocab_size(self) -> int:
@@ -87,6 +96,7 @@ class TrainingConfig:
         use_amp: bool = True,  # 混合精度トレーニング
         use_gradient_checkpointing: bool = True,  # 勾配チェックポイント
         clip_grad_norm: Optional[float] = True,  # 勾配クリッピング
+        clip_value: float = 1.0,  # 追加: 勾配クリッピング値
     ):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
@@ -102,6 +112,7 @@ class TrainingConfig:
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.gradient_accumulation_steps = accumulation_steps  # 互換性のため
         self.clip_grad_norm = clip_grad_norm
+        self.clip_value = clip_value  # 追加: 勾配クリッピング値
 
 
 class PathsConfig:
