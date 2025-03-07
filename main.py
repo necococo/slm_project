@@ -13,7 +13,7 @@ from datetime import datetime
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.model import WaveNetworkLM
-from slm.trainer import Trainer
+from slm.train import Trainer
 from slm.data_loader import get_dataset
 from slm.tokenizer import JapaneseTokenizer
 

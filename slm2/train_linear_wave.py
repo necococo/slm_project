@@ -16,7 +16,7 @@ from transformers import AutoTokenizer
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.enhanced_wave_models import LinearWaveNetworkLM, HybridWaveNetworkLM
-from slm.trainer import Trainer
+from slm.train import Trainer
 
 def main():
     print(f"=== LinearWave Network学習 開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")

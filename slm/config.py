@@ -100,9 +100,6 @@ class TrainingConfig:
         use_gradient_checkpointing: bool = True,  # 勾配チェックポイント
         clip_grad_norm: Optional[float] = True,  # 勾配クリッピング
         clip_value: float = 1.0,  # 追加: 勾配クリッピング値
-        # auto_adjust_learning_rate: bool = False,  # 追加: 学習率を自動調整するかどうか
-        # min_learning_rate: float = 1e-3,  # 追加: 自動調整時の最小学習率
-        # max_learning_rate: float = 1e-3,  # 追加: 自動調整時の最大学習率
     ):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
@@ -119,10 +116,6 @@ class TrainingConfig:
         self.gradient_accumulation_steps = accumulation_steps  # 互換性のため
         self.clip_grad_norm = clip_grad_norm
         self.clip_value = clip_value  # 追加: 勾配クリッピング値
-        # # 学習率自動調整の設定
-        # self.auto_adjust_learning_rate = auto_adjust_learning_rate
-        # self.min_learning_rate = min_learning_rate
-        # self.max_learning_rate = max_learning_rate
         
     def get_effective_learning_rate(self) -> float:
         """
@@ -153,16 +146,29 @@ class PathsConfig:
         dataset_name: str = "singletongue/wikipedia-utils",
         dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
         tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking", # 修正: 正しいリポジトリ名
-        tokenizer_file: str = "tokenizer_model.json" # 追加: 実際のファイル名を指定
+        tokenizer_file: str = "tokenizer_model.json", # 追加: 実際のファイル名を指定
+        language: str = "ja"  # 追加: 言語選択（'ja'または'en'）
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = os.path.join(self.base_dir, "data")
         self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
         self.log_dir = os.path.join(self.base_dir, "logs")
-        self.dataset_name = dataset_name
-        self.dataset_subset = dataset_subset
-        self.tokenizer_name = tokenizer_name
-        self.tokenizer_file = tokenizer_file  # 追加: ファイル名を保存
+        self.visualization_dir = os.path.join(self.log_dir, "visualizations")  # 追加: 可視化結果保存ディレクトリ
+        self.language = language
+        
+        # 言語に基づいてデータセットとトークナイザーを設定
+        if language == "en":
+            # 英語用のデフォルト設定
+            self.dataset_name = "wikitext"
+            self.dataset_subset = "wikitext-2-raw-v1"
+            self.tokenizer_name = "gpt2"
+            self.tokenizer_file = "gpt2_tokenizer.json"
+        else:
+            # 日本語用（既存の設定を維持）
+            self.dataset_name = dataset_name
+            self.dataset_subset = dataset_subset
+            self.tokenizer_name = tokenizer_name
+            self.tokenizer_file = tokenizer_file
     
     @property
     def dataset_dir(self) -> str:
@@ -185,6 +191,12 @@ class PathsConfig:
     def tensorboard_log_dir(self) -> str:
         """TensorBoardのログディレクトリを返します"""
         return os.path.join(self.log_dir, "tensorboard")
+        
+    @property
+    def visualization_path(self) -> str:
+        """可視化結果の保存パスを返します"""
+        os.makedirs(self.visualization_dir, exist_ok=True)
+        return self.visualization_dir
         
     @staticmethod
     def safe_index(idx):

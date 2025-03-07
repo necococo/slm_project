@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.slm2.linear_wave_attention import LinearWaveAttention
-from slm.trainer import Trainer
+from slm.train import Trainer
 from slm.collator import CustomCollator
 
 # LinearWaveAttentionを使った簡易モデル

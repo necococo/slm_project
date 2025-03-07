@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
-from slm.trainer import Trainer
+from slm.train import Trainer
 from slm.debug_wave import WaveDebugger
 from slm.collator import CustomCollator
 from slm.inference import sample_text
