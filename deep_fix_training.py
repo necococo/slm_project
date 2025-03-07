@@ -12,9 +12,9 @@ import torch
 from datetime import datetime
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
-from slm.model import WaveNetworkLM
+from slm.modules.wave_network import WaveNetworkLM
 from slm.trainer import Trainer
-from slm.data_loader import get_dataset
+# from slm.data_loader import get_dataset
 from slm.tokenizer import JapaneseTokenizer
 
 def main():
@@ -75,40 +75,13 @@ def main():
                 raise ValueError("GPU環境ではtokenizerが保存済みである必要があります。")
             from datasets import load_from_disk
             train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
-            if os.path.exists(os.path.join(paths_config.data_dir, "valid_dataset")):
-                valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
-            else:
-                valid_dataset = None
+            valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
 
-                    # 学習用サブセット
+            # 学習用サブセット
             train_subset = train_dataset.select(range(min(5000, len(train_dataset))))
             valid_subset = valid_dataset.select(range(min(50, len(valid_dataset))))
 
         else:
-            # CPU環境の場合（前処理中）
-            print("トークナイザーを準備中...")
-            if os.path.exists(paths_config.tokenizer_path):
-                tokenizer = JapaneseTokenizer(model_file=paths_config.tokenizer_path)
-            else:
-                tokenizer = JapaneseTokenizer(
-                    hf_model=paths_config.tokenizer_name, 
-                    save_to=paths_config.tokenizer_path, 
-                    model_file=None
-                )
-            print(f"語彙サイズ: {tokenizer.vocab_size}")
-            
-            print("データセットを準備中...")
-            train_dataset, valid_dataset = get_dataset(tokenizer, paths_config, max_seq_len=model_config.max_seq_len)
-            print(f"学習データサイズ: {len(train_dataset)}件")
-            if valid_dataset:
-                print(f"検証データサイズ: {len(valid_dataset)}件")
-            
-            print("前処理済みデータセットをディスクに保存中...")
-            train_dataset.save_to_disk(os.path.join(paths_config.data_dir, "train_dataset"))
-            if valid_dataset:
-                valid_dataset.save_to_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
-            print("保存完了。")
-            
             print("CPUランタイムです。GPU環境で再実行してください。")
             exit(0)
         
