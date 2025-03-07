@@ -46,7 +46,7 @@ class ModelConfig:
         self.use_wavelet = use_wavelet
         self.wavelet_name = wavelet_name
         self.tokenizer = None  # トークナイザーを後から設定可能に
-        self.norm_scheme = norm_scheme  # 追加: Pre-LN vs Post-LN
+        # self.norm_scheme = norm_scheme  # 追加: Pre-LN vs Post-LN
         self.activation = activation  # 追加: 活性化関数
         self.complex_init_scale = complex_init_scale  # 追加: 複素数初期化スケール
     
@@ -141,6 +141,7 @@ class PathsConfig:
         self.dataset_name = dataset_name
         self.dataset_subset = dataset_subset
         self.tokenizer_name = tokenizer_name
+        # self.tokenizer_path = os.path.join(self.checkpoint_dir, "tokenizers", "tokenizer.model")
         
     @property
     def dataset_dir(self) -> str:

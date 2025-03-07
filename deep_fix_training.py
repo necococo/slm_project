@@ -41,9 +41,6 @@ def main():
     
     # パス設定
     paths_config = PathsConfig(
-        base_dir="/content/drive/MyDrive/slm",
-        dataset_name="singletongue/wikipedia-utils",  # 日本語Wikipediaデータ
-        dataset_subset="corpus-jawiki-20230403-filtered-large"  # 使用するサブセットに変更
     )
     
     # モデル設定
@@ -72,7 +69,17 @@ def main():
             if os.path.exists(paths_config.tokenizer_path):
                 tokenizer = JapaneseTokenizer(model_file=paths_config.tokenizer_path)
             else:
-                raise ValueError("GPU環境ではtokenizerが保存済みである必要があります。")
+                # 修正: トークナイザーが存在しない場合はHugging Faceからダウンロード
+                print(f"トークナイザーが見つかりません。{paths_config.tokenizer_name}からダウンロードします...")
+                # トークナイザー保存用のディレクトリを作成
+                os.makedirs(os.path.dirname(paths_config.tokenizer_path), exist_ok=True)
+                tokenizer = JapaneseTokenizer(
+                    hf_model=paths_config.tokenizer_name, 
+                    save_to=paths_config.tokenizer_path,
+                    model_file=None
+                )
+                print(f"トークナイザーを保存しました: {paths_config.tokenizer_path}")
+
             from datasets import load_from_disk
             train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
             valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
