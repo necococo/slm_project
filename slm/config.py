@@ -100,6 +100,9 @@ class TrainingConfig:
         use_gradient_checkpointing: bool = True,  # 勾配チェックポイント
         clip_grad_norm: Optional[float] = True,  # 勾配クリッピング
         clip_value: float = 1.0,  # 追加: 勾配クリッピング値
+        auto_adjust_learning_rate: bool = False,  # 追加: 学習率を自動調整するかどうか
+        min_learning_rate: float = 1e-3,  # 追加: 自動調整時の最小学習率
+        max_learning_rate: float = 1e-3,  # 追加: 自動調整時の最大学習率
     ):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
@@ -116,6 +119,20 @@ class TrainingConfig:
         self.gradient_accumulation_steps = accumulation_steps  # 互換性のため
         self.clip_grad_norm = clip_grad_norm
         self.clip_value = clip_value  # 追加: 勾配クリッピング値
+        # 学習率自動調整の設定
+        self.auto_adjust_learning_rate = auto_adjust_learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.max_learning_rate = max_learning_rate
+        
+    def get_effective_learning_rate(self) -> float:
+        """
+        実際に使用される学習率を取得します。
+        auto_adjust_learning_rateがFalseの場合、設定された学習率をそのまま返します。
+        
+        Returns:
+            float: 使用する学習率
+        """
+        return self.learning_rate
 
 
 class PathsConfig:
@@ -168,3 +185,39 @@ class PathsConfig:
     def tensorboard_log_dir(self) -> str:
         """TensorBoardのログディレクトリを返します"""
         return os.path.join(self.log_dir, "tensorboard")
+        
+    @staticmethod
+    def safe_index(idx):
+        """
+        NumPy整数型やその他の特殊な整数型をPythonネイティブのint型に変換します。
+        これによりdatasetsライブラリなどでの型エラーを防止します。
+        
+        Args:
+            idx: 変換する対象のインデックス値
+            
+        Returns:
+            int: Pythonネイティブのint型に変換された値
+        """
+        if hasattr(idx, 'item'):  # NumPyの数値型はitem()メソッドを持っている
+            return idx.item()
+        return int(idx)  # その他の場合は通常のint変換を試みる
+        
+    @staticmethod
+    def safe_dataset_access(dataset, idx, key=None):
+        """
+        データセットへの安全なアクセスを提供するヘルパーメソッド。
+        NumPy型のインデックスを適切に処理し、オプションでデータの特定のフィールドを取得します。
+        
+        Args:
+            dataset: アクセス対象のデータセット
+            idx: アクセスするインデックス（int, numpy.int64などの型を受け付ける）
+            key: 取得するデータのキー（例：'input_ids'）、Noneの場合は全データを返す
+            
+        Returns:
+            指定したデータセットの項目またはその特定フィールド
+        """
+        safe_idx = PathsConfig.safe_index(idx)
+        item = dataset[safe_idx]
+        if key is not None:
+            return item[key]
+        return item
