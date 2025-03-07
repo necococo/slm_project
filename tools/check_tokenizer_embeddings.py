@@ -22,11 +22,17 @@ from slm.config import ModelConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.utils import load_checkpoint
 
-def get_text_field(dataset):
-    """データセットからテキストフィールドを特定して取得"""
+def get_text_or_decode_ids(dataset, tokenizer):
+    """データセットからテキストフィールドを取得、または入力IDをデコードする"""
     # サンプル項目を取得して検査
     sample_item = dataset[0]
     print(f"データセットの項目構造: {list(sample_item.keys())}")
+    
+    # 既にtrain_dataset/valid_datasetのように構造化されている場合
+    if 'input_ids' in sample_item:
+        print("input_ids フィールドをデコードして使用します")
+        # トークン化済みデータを使用する場合、tokenizer.decodeでテキストに戻す
+        return None  # 特別な処理をするためにNoneを返す
     
     # 一般的なテキストフィールド名をチェック
     possible_text_fields = ['text', 'content', 'sentence', 'document', 'input_text']
@@ -35,6 +41,7 @@ def get_text_field(dataset):
     for field in possible_text_fields:
         if field in sample_item:
             text_field = field
+            print(f"テキストフィールド '{field}' が見つかりました")
             break
     
     # テキストフィールドが見つからない場合、文字列型の最初のフィールドを使用
@@ -42,12 +49,13 @@ def get_text_field(dataset):
         for field, value in sample_item.items():
             if isinstance(value, str) and len(value) > 10:  # ある程度の長さがある文字列フィールド
                 text_field = field
+                print(f"文字列フィールド '{field}' を使用します")
                 break
     
     if not text_field:
-        raise ValueError("データセットに適切なテキストフィールドが見つかりません")
+        print("テキストフィールドが見つかりません。サンプルテキストを使用します")
+        return None
         
-    print(f"使用するテキストフィールド: '{text_field}'")
     return text_field
 
 def check_tokenizer(tokenizer, dataset):
@@ -57,16 +65,35 @@ def check_tokenizer(tokenizer, dataset):
     print(f"語彙サイズ: {tokenizer.vocab_size}")
     
     # データセットからテキストフィールドを特定
-    text_field = get_text_field(dataset)
+    text_field = get_text_or_decode_ids(dataset, tokenizer)
     
-    # データセットからサンプルテキストを取得（最大5つ）
-    sample_indices = np.random.choice(len(dataset), min(5, len(dataset)), replace=False)
-    sample_texts = [dataset[idx][text_field] for idx in sample_indices]
+    # サンプルテキストの取得方法を決定
+    if text_field:
+        # データセットからテキストフィールドでサンプルを抽出
+        sample_indices = np.random.choice(len(dataset), min(5, len(dataset)), replace=False)
+        sample_texts = [dataset[idx][text_field] for idx in sample_indices]
+    else:
+        # input_idsからデコードするか、テキストフィールドがない場合はサンプルテキスト使用
+        if 'input_ids' in dataset[0]:
+            sample_indices = np.random.choice(len(dataset), min(5, len(dataset)), replace=False)
+            sample_texts = []
+            for idx in sample_indices:
+                # 特殊トークンを除去するためにskip_special_tokens=True
+                decoded_text = tokenizer.decode(dataset[idx]['input_ids'], skip_special_tokens=True)
+                sample_texts.append(decoded_text)
+        else:
+            # フォールバック用のサンプルテキスト
+            sample_texts = [
+                "これはテスト文です。",
+                "自然言語処理は面白いです。",
+                "人工知能と機械学習について学んでいます。",
+                "王様と女王様が王宮でパーティーを開きました。"
+            ]
     
     # 長すぎるテキストは短く切り詰める
     sample_texts = [text[:100] + ('...' if len(text) > 100 else '') for text in sample_texts]
     
-    print(f"\n{len(sample_texts)}個のサンプルテキストをデータセットから抽出しました")
+    print(f"\n{len(sample_texts)}個のサンプルテキストを取得しました")
     
     for text in sample_texts:
         print("\n----")
