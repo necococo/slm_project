@@ -68,7 +68,7 @@ def main():
             valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
             
             # テスト用にデータセットの小さなサブセットを作成
-            dataset_sizes = [5000]  # テスト用のデータセットサイズ
+            dataset_sizes = [20000]  # テスト用のデータセットサイズ
             
             print(f"元のデータセットサイズ - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
             
