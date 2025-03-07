@@ -55,9 +55,9 @@ class Trainer:
         
         # 学習率調整（NaN対策に小さめ）
         learning_rate = self.training_config.learning_rate
-        if learning_rate > 1e-5:
-            print(f"WARNING: Lowering learning rate from {learning_rate} to 1e-5 for stability")
-            learning_rate = 1e-5
+        # if learning_rate > 1e-5:
+        #     print(f"WARNING: Lowering learning rate from {learning_rate} to 1e-5 for stability")
+        #     learning_rate = 1e-5
 
         # Optimizer を AdamW に変更
         self.optimizer = AdamW(

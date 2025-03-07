@@ -100,9 +100,9 @@ class TrainingConfig:
         use_gradient_checkpointing: bool = True,  # 勾配チェックポイント
         clip_grad_norm: Optional[float] = True,  # 勾配クリッピング
         clip_value: float = 1.0,  # 追加: 勾配クリッピング値
-        auto_adjust_learning_rate: bool = False,  # 追加: 学習率を自動調整するかどうか
-        min_learning_rate: float = 1e-3,  # 追加: 自動調整時の最小学習率
-        max_learning_rate: float = 1e-3,  # 追加: 自動調整時の最大学習率
+        # auto_adjust_learning_rate: bool = False,  # 追加: 学習率を自動調整するかどうか
+        # min_learning_rate: float = 1e-3,  # 追加: 自動調整時の最小学習率
+        # max_learning_rate: float = 1e-3,  # 追加: 自動調整時の最大学習率
     ):
         self.learning_rate = learning_rate
         self.batch_size = batch_size
@@ -119,10 +119,10 @@ class TrainingConfig:
         self.gradient_accumulation_steps = accumulation_steps  # 互換性のため
         self.clip_grad_norm = clip_grad_norm
         self.clip_value = clip_value  # 追加: 勾配クリッピング値
-        # 学習率自動調整の設定
-        self.auto_adjust_learning_rate = auto_adjust_learning_rate
-        self.min_learning_rate = min_learning_rate
-        self.max_learning_rate = max_learning_rate
+        # # 学習率自動調整の設定
+        # self.auto_adjust_learning_rate = auto_adjust_learning_rate
+        # self.min_learning_rate = min_learning_rate
+        # self.max_learning_rate = max_learning_rate
         
     def get_effective_learning_rate(self) -> float:
         """
