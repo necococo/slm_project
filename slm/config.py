@@ -132,7 +132,7 @@ class PathsConfig:
         base_dir: str = "/content/drive/MyDrive/slm",
         dataset_name: str = "singletongue/wikipedia-utils",
         dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
-        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking"
+        tokenizer_name: str = "tohoku-nlp/bert-base-japanese-whole-word-masking"
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = os.path.join(self.base_dir, "data")
