@@ -41,7 +41,7 @@ def main():
     
     # パス設定
     paths_config = PathsConfig(
-        base_dir="/content/drive/MyDrive",
+        base_dir="/content/drive/MyDrive/slm",
         dataset_name="singletongue/wikipedia-utils",  # 日本語Wikipediaデータ
         dataset_subset="corpus-jawiki-20230403-filtered-large"  # 使用するサブセットに変更
     )

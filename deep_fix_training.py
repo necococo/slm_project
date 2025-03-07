@@ -1,440 +1,159 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Wave Network抜本的修正版トレーニングスクリプト
-ロスが7付近で停滞する問題に根本対策を施します
-"""
+# main.py
+# google colabでの実行を想定しています。
+
+# ①初回はランタイムをCPU環境で前処理を行い、データセットがディスクに保存され一旦終わるようになっています。ランタイムをGPU環境に切り替えてから再度 !python main.py を実行してください。データセットがdiskから読み込まれます。
+# ②学習の再開を行いたい場合は、コマンドライン引数 "resume" を渡して実行する（!python main.py resume）と、保存済みのチェックポイントから復元して学習を続行できます。
 
 import os
 import sys
 import torch
-import torch.nn as nn
-import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime
-from datasets import load_from_disk
-from transformers import AutoTokenizer
-from torch.utils.data import DataLoader
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
-from slm.modules.wave_network import WaveNetworkLM
+from slm.model import WaveNetworkLM
 from slm.trainer import Trainer
-from slm.debug_wave import WaveDebugger
-from slm.collator import CustomCollator
-from slm.inference import sample_text
-
-# 追加: 環境変数の設定
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-# 追加: 超小規模データセット作成関数
-def create_micro_dataset(dataset, size=100, vocab_size=1000):
-    """超小規模データセットを作成して問題の再現性を確認"""
-    micro_data = dataset.select(range(min(size, len(dataset))))
-    
-    # データセット構造を確認
-    if len(micro_data) > 0:
-        sample_item = micro_data[0]
-        print(f"データセット構造: {list(sample_item.keys())}")
-        
-        # テキストフィールドの検出（一般的な名前をチェック）
-        text_key = None
-        possible_keys = ['text', 'content', 'input_text', 'sentence', 'context', 'document']
-        for key in possible_keys:
-            if key in sample_item:
-                text_key = key
-                break
-        
-        # テキストフィールドが見つからない場合は最初のstring型フィールドを使用
-        if text_key is None:
-            for key, value in sample_item.items():
-                if isinstance(value, str) and len(value) > 0:
-                    text_key = key
-                    break
-        
-        print(f"テキストフィールドとして使用するキー: {text_key}")
-        
-        if text_key:
-            # 語彙を制限した超小規模タスク用にフィルタリング
-            filtered_data = []
-            for item in micro_data:
-                if text_key in item and isinstance(item[text_key], str):
-                    filtered_text = ' '.join([w for w in item[text_key].split() 
-                                        if len(filtered_data) < size])
-                    if filtered_text:
-                        filtered_item = {key: val for key, val in item.items()}
-                        filtered_item[text_key] = filtered_text
-                        filtered_data.append(filtered_item)
-            
-            # データセットタイプに合わせて返す
-            from datasets import Dataset
-            return Dataset.from_list(filtered_data)
-        else:
-            print("警告: テキストデータを含むフィールドが見つかりませんでした。元のデータセットをそのまま返します。")
-    
-    return micro_data
-
-# 修正: 複素数初期化関数 - パラメータをconfigから取得するように
-def initialize_complex_parameters(model):
-    """複素数パラメータの特殊初期化 - configから初期化パラメータを取得"""
-    # configからスケール値を取得
-    scale = getattr(model.config, 'complex_init_scale', 0.02)
-    
-    for name, param in model.named_parameters():
-        if 'weight' in name:
-            if 'embedding' in name:
-                nn.init.normal_(param, mean=0.0, std=0.02)
-            elif 'norm' in name or 'scale' in name:
-                nn.init.constant_(param, 1.0)
-            elif 'wave' in name or 'complex' in name:
-                # 複素数パラメータ用の特殊初期化
-                with torch.no_grad():
-                    # 実部と虚部を個別に初期化
-                    if param.dim() >= 2:
-                        # 複素数行列の特殊初期化 - configから取得したスケール値を使用
-                        nn.init.uniform_(param, -scale, scale)
-                        
-                        # 位相をより均一に分布させる工夫
-                        if 'phase' in name:
-                            nn.init.uniform_(param, -np.pi, np.pi)
-                    else:
-                        nn.init.zeros_(param)
-            elif 'classifier' in name:
-                # 出力層は非常に小さく初期化 - スケールに基づいて調整
-                classifier_scale = scale * 0.05  # 出力層は特に小さく
-                nn.init.normal_(param, mean=0.0, std=classifier_scale)
-            else:
-                # 一般的な重み行列はXavier初期化
-                gain = getattr(model.config, 'xavier_gain', 0.1)
-                nn.init.xavier_uniform_(param, gain=gain)
-        elif 'bias' in name:
-            nn.init.zeros_(param)
-
-# 追加: 勾配フロー解析関数
-def analyze_gradient_flow(model, input_ids, labels):
-    """モデル全体の勾配フローを解析"""
-    # 計算グラフの追跡を有効化
-    for param in model.parameters():
-        if param.requires_grad:
-            param.retain_grad()
-    
-    # 順伝播と損失計算
-    outputs = model(input_ids)
-    loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.size(-1)), labels.view(-1))
-    loss.backward()
-    
-    # 勾配フロー解析
-    gradient_stats = {}
-    for name, param in model.named_parameters():
-        if param.requires_grad and param.grad is not None:
-            grad = param.grad.data
-            grad_stats = {
-                'mean': float(grad.mean()),
-                'std': float(grad.std()),
-                'min': float(grad.min()),
-                'max': float(grad.max()),
-                'norm': float(torch.norm(grad)),
-                'has_nan': bool(torch.isnan(grad).any()),
-                'has_inf': bool(torch.isinf(grad).any())
-            }
-            gradient_stats[name] = grad_stats
-    
-    return gradient_stats, float(loss.item())
-
-# 追加: 生成テキスト品質評価
-def evaluate_generated_text(model, tokenizer, input_text, max_len=50, device="cuda"):
-    """モデルの現在の状態を生成テキストで評価"""
-    input_ids = tokenizer.encode(input_text, return_tensors="pt").to(device)
-    generated = sample_text(model, input_ids, max_len=max_len, device=device)
-    generated_text = tokenizer.decode(generated[0], skip_special_tokens=True)
-    return generated_text
+from slm.data_loader import get_dataset
+from slm.tokenizer import JapaneseTokenizer
 
 def main():
-    print(f"=== Wave Network抜本修正版学習 開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+    """
+    How:
+        Wave Network言語モデルの学習を実行します。
+        1. 設定の初期化
+        2. データセットとトークナイザーの準備
+        3. モデルの初期化
+        4. トレーナーでMLM学習とDiffusion Fine-tuningを実行
+    """
+    # 開始メッセージ
+    print(f"=== Wave Network言語モデル学習 開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-    # 再現性のために強固なシード固定
-    seed = 3407  # "Seed 3407 is all you need" 論文からの数値
-    np.random.seed(seed)
+    # シード設定
+    seed = 42
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
     
+    # デバイス設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # 設定
-    paths_config = PathsConfig()
+    # パス設定
+    paths_config = PathsConfig(
+        base_dir="/content/drive/MyDrive/slm",
+        dataset_name="singletongue/wikipedia-utils",  # 日本語Wikipediaデータ
+        dataset_subset="corpus-jawiki-20230403-filtered-large"  # 使用するサブセットに変更
+    )
+    
+    # モデル設定
+    model_config = ModelConfig(
+    )
+    
+    # 学習設定
+    training_config = TrainingConfig(
+    )
     
     # ディレクトリ作成
-    deep_fix_dir = os.path.join(paths_config.checkpoint_dir, "deep_fix_model")
-    os.makedirs(deep_fix_dir, exist_ok=True)
+    os.makedirs(paths_config.data_dir, exist_ok=True)
+    os.makedirs(paths_config.checkpoint_dir, exist_ok=True)
+    os.makedirs(paths_config.log_dir, exist_ok=True)
     
-    # モデル設定: 複数のモデルサイズを試す
-    model_configs = [
-        # 超小型モデル（問題切り分け用）
-        ModelConfig(
-            hidden_size=64,     # 非常に小さいモデルサイズ
-            num_layers=1,       # 最少レイヤー数
-            max_seq_len=32,     # 非常に短いシーケンス
-            dropout_prob=0.0,   # ドロップアウトなし
-            use_rope=True,      # 位置エンコーディングは必須
-            norm_scheme="pre"   # Pre-LN方式を試す
-        ),
-        # 小型モデル
-        ModelConfig(
-            hidden_size=256,    # 小さいモデルサイズ
-            num_layers=2,       
-            max_seq_len=128,    
-            dropout_prob=0.0,   
-            use_rope=True,      
-            norm_scheme="post"  
-        ),
-    ]
-    
-    # 追加: データセットサイズ変数
-    dataset_sizes = [100, 1000, 10000]  # 小さい順にテスト
-    
-    # 追加: トレーニング設定
-    training_configs = [
-        # 安定性重視
-        TrainingConfig(
-            learning_rate=1e-5,
-            batch_size=16,
-            mlm_epochs=3,
-            mlm_probability=0.15,
-            weight_decay=0.01,
-            clip_value=1.0
-        ),
-        # 学習速度重視
-        TrainingConfig(
-            learning_rate=5e-5,
-            batch_size=32,
-            mlm_epochs=2,
-            mlm_probability=0.15,
-            weight_decay=0.01,
-            clip_value=0.5
-        ),
-    ]
+    # もし'resume'引数が指定されていたら、保存されたチェックポイントから復元する
+    resume_checkpoint = None
+    if len(sys.argv) > 1 and sys.argv[1] == "resume":
+        resume_checkpoint = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
+        print(f"チェックポイントから復元します: {resume_checkpoint}")
     
     try:
-        # データセット読み込み
-        print("データセットをロード中...")
-        try:
-            train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
-            valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
-        except:
-            print("既存のデータセットが見つかりません。CPU環境での前処理が必要です。")
-            sys.exit(1)
-        
-        # トークナイザー読み込み
-        print("トークナイザーをロード中...")
-        try:
-            # 保存済みトークナイザーを使用
+        # GPU環境なら、前処理済みのtokenizerとdatasetを読み込みます
+        if device.type == "cuda":
+            print("GPU環境と判断しました。保存済みのtokenizerとdatasetをロードします。")
             if os.path.exists(paths_config.tokenizer_path):
-                from slm.tokenizer import JapaneseTokenizer
                 tokenizer = JapaneseTokenizer(model_file=paths_config.tokenizer_path)
             else:
-                # AutoTokenizerをフォールバックとして使用
-                tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
-        except Exception as e:
-            print(f"トークナイザー読み込みエラー: {e}")
-            sys.exit(1)
+                raise ValueError("GPU環境ではtokenizerが保存済みである必要があります。")
+            from datasets import load_from_disk
+            train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
+            if os.path.exists(os.path.join(paths_config.data_dir, "valid_dataset")):
+                valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
+            else:
+                valid_dataset = None
+
+                    # 学習用サブセット
+            train_subset = train_dataset.select(range(min(5000, len(train_dataset))))
+            valid_subset = valid_dataset.select(range(min(50, len(valid_dataset))))
+
+        else:
+            # CPU環境の場合（前処理中）
+            print("トークナイザーを準備中...")
+            if os.path.exists(paths_config.tokenizer_path):
+                tokenizer = JapaneseTokenizer(model_file=paths_config.tokenizer_path)
+            else:
+                tokenizer = JapaneseTokenizer(
+                    hf_model=paths_config.tokenizer_name, 
+                    save_to=paths_config.tokenizer_path, 
+                    model_file=None
+                )
+            print(f"語彙サイズ: {tokenizer.vocab_size}")
             
-        print(f"データセットサイズ: {len(train_dataset)}")
-        
-        # テスト用のバッチを取得（勾配フロー解析用）
-        collator = CustomCollator(
-            tokenizer=tokenizer, 
-            model_config=model_configs[0],
-            mlm=True,
-            mlm_probability=0.15,
-            mask_token_id=tokenizer.mask_token_id if hasattr(tokenizer, 'mask_token_id') else 4
-        )
-        test_batch = next(iter(DataLoader(
-            train_dataset.select(range(5)), 
-            batch_size=2, 
-            collate_fn=collator
-        )))
-        input_ids = test_batch["input_ids"].to(device)
-        labels = test_batch["labels"].to(device)
-        
-        # 実験ループ
-        for model_idx, model_config in enumerate(model_configs):
-            print(f"\n=== モデル構成 {model_idx+1}/{len(model_configs)} ===")
-            print(f"hidden_size: {model_config.hidden_size}, layers: {model_config.num_layers}, norm: {model_config.norm_scheme}")
+            print("データセットを準備中...")
+            train_dataset, valid_dataset = get_dataset(tokenizer, paths_config, max_seq_len=model_config.max_seq_len)
+            print(f"学習データサイズ: {len(train_dataset)}件")
+            if valid_dataset:
+                print(f"検証データサイズ: {len(valid_dataset)}件")
             
-            # トークナイザー設定
-            model_config.set_tokenizer(tokenizer)
+            print("前処理済みデータセットをディスクに保存中...")
+            train_dataset.save_to_disk(os.path.join(paths_config.data_dir, "train_dataset"))
+            if valid_dataset:
+                valid_dataset.save_to_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
+            print("保存完了。")
             
-            for dataset_size in dataset_sizes:
-                print(f"\n--- データセットサイズ: {dataset_size} ---")
-                
-                # データセットの部分集合を作成
-                curr_train = train_dataset.select(range(min(dataset_size, len(train_dataset))))
-                curr_valid = valid_dataset.select(range(min(dataset_size // 10, len(valid_dataset))))
-                
-                for train_idx, training_config in enumerate(training_configs):
-                    print(f"\n* 学習設定 {train_idx+1}/{len(training_configs)} *")
-                    print(f"lr: {training_config.learning_rate}, batch: {training_config.batch_size}, clip: {training_config.clip_value}")
-                    
-                    # モデル初期化
-                    model = WaveNetworkLM(model_config)
-                    # 修正: 特殊初期化適用 - パラメータを渡さずconfigから取得
-                    initialize_complex_parameters(model)
-                    model.to(device)
-                    
-                    # トレーナー初期化
-                    trainer = Trainer(
-                        model=model,
-                        train_dataset=curr_train,
-                        valid_dataset=curr_valid,
-                        training_config=training_config,
-                        paths_config=paths_config,
-                        device=device
-                    )
-                    
-                    # 修正: training_configから勾配クリップ値を設定
-                    if hasattr(training_config, 'clip_value'):
-                        trainer.clip_value = training_config.clip_value
-                    
-                    # 勾配フロー解析（学習前）
-                    grad_stats, loss = analyze_gradient_flow(model, input_ids, labels)
-                    print(f"学習前の損失: {loss:.4f}")
-                    print("勾配統計（学習前）:")
-                    for i, (name, stats) in enumerate(grad_stats.items()):
-                        if i < 3:  # 全部出すと長いので最初の3つだけ
-                            print(f"  {name}: norm={stats['norm']:.4f}, min={stats['min']:.4f}, max={stats['max']:.4f}")
-                            if stats['has_nan']:
-                                print(f"  警告: 層 {name} に NaN が含まれています!")
-                    
-                    # 学習前の生成テキスト評価
-                    print("学習前の生成テキスト評価:")
-                    prompt = "これは"
-                    generated = evaluate_generated_text(model, tokenizer, prompt, max_len=20, device=device)
-                    print(f"プロンプト「{prompt}」→ 「{generated}」")
-                    
-                    # 学習
-                    print("学習開始...")
-                    history = trainer.train_mlm(num_epochs=training_config.mlm_epochs)
-                    
-                    # 結果評価
-                    print("学習結果:")
-                    # historyがエポック別の損失を含むリストや辞書でない場合の対応
-                    if history:
-                        min_loss = min([log['loss'] for log in history]) if isinstance(history[0], dict) else min(history)
-                        print(f"  最小ロス: {min_loss:.4f}")
-                    else:
-                        print("  学習履歴が記録されていません")
-                    
-                    # 生成テキスト評価（学習後）
-                    print("学習後の生成テキスト評価:")
-                    generated = evaluate_generated_text(model, tokenizer, prompt, max_len=20, device=device)
-                    print(f"プロンプト「{prompt}」→ 「{generated}」")
-                    
-                    # チェックポイント保存（小さなデータセットの場合は省略）
-                    if dataset_size >= 1000:
-                        checkpoint_path = f"deep_fix_model/model_m{model_idx}_t{train_idx}_d{dataset_size}"
-                        trainer.save_checkpoint(checkpoint_path)
-                        print(f"モデルを保存しました: {os.path.join(deep_fix_dir, checkpoint_path)}.pt")
-                    
-                    # 勾配フロー再分析（学習後）
-                    grad_stats_after, loss_after = analyze_gradient_flow(model, input_ids, labels)
-                    print(f"学習後の損失: {loss_after:.4f} (初期値: {loss:.4f})")
-                    
-                    # 勾配変化の分析
-                    for name in grad_stats.keys():
-                        before = grad_stats[name]['norm']
-                        after = grad_stats_after[name]['norm']
-                        if after / (before + 1e-10) > 10 or after / (before + 1e-10) < 0.1:
-                            print(f"  層 {name} の勾配が大きく変化: {before:.4f} → {after:.4f}")
-                    
-                    # トレーナークリーンアップ
-                    trainer.close()
+            print("CPUランタイムです。GPU環境で再実行してください。")
+            exit(0)
         
-        # 最終的な総括
-        print("\n=== 実験総括 ===")
-        print("複数のモデル構成、データセットサイズ、トレーニング設定を試した結果:")
-        print("1. データセットサイズの影響: 小→大でどのように変化したか")
-        print("2. モデル構成の影響: Pre-LN vs Post-LN、サイズによる違い")
-        print("3. トレーニング設定の影響: 学習率、勾配クリッピング等の効果")
+        # ここで model_config に tokenizer をセットする
+        model_config.set_tokenizer(tokenizer)
         
-        # 最適な設定でフルトレーニング
-        print("\n=== 最良設定でのフルトレーニング ===")
-        # ここでは最適な設定を選んでフルトレーニングを行う
-        # 実際には上記の実験結果から選ぶべき
+        # モデル初期化
+        print("モデルを初期化中...")
+        model = WaveNetworkLM(model_config)
         
-        best_model_config = model_configs[-1]  # 最大のモデルを選択
-        best_training_config = training_configs[0]  # 安定性重視の設定を選択
+        # もしチェックポイントが存在すれば復元
+        if resume_checkpoint and os.path.exists(resume_checkpoint):
+            from slm.utils import load_checkpoint
+            load_checkpoint(resume_checkpoint, model)  # optimizer等も必要なら適宜復元してください
         
-        # 修正: より詳細な設定情報表示
-        print(f"選択したモデル構成:")
-        print(f"  hidden_size: {best_model_config.hidden_size}")
-        print(f"  num_layers: {best_model_config.num_layers}")
-        print(f"  norm_scheme: {best_model_config.norm_scheme}")
-        print(f"  dropout_prob: {best_model_config.dropout_prob}")
-        
-        print(f"選択したトレーニング設定:")
-        print(f"  learning_rate: {best_training_config.learning_rate}")
-        print(f"  batch_size: {best_training_config.batch_size}")
-        print(f"  mlm_epochs: {best_training_config.mlm_epochs}")
-        print(f"  clip_value: {best_training_config.clip_value}")
-        print(f"  weight_decay: {best_training_config.weight_decay}")
-        
-        # データセット準備（より大きなサイズ）
-        train_dataset_full = train_dataset.select(range(min(100000, len(train_dataset))))
-        valid_dataset_full = valid_dataset.select(range(min(5000, len(valid_dataset))))
-        print(f"トレーニングデータサイズ: {len(train_dataset_full)}")
-        
-        # 最終モデル初期化
-        best_model_config.set_tokenizer(tokenizer)
-        
-        # 修正: 最終モデル設定のパラメータ微調整
-        # 最終モデル用に適切な値を設定
-        best_model_config.complex_init_scale = 0.01  # 最終モデル用に小さめの初期化スケール
-        final_model = WaveNetworkLM(best_model_config)
-        
-        # 修正: パラメータをconfigから取得
-        initialize_complex_parameters(final_model)
-        final_model.to(device)
-        
-        # 最終トレーナー
-        final_trainer = Trainer(
-            model=final_model,
-            train_dataset=train_dataset_full,
-            valid_dataset=valid_dataset_full,
-            training_config=best_training_config,
+        # トレーナー初期化
+        trainer = Trainer(
+            model=model,
+            train_dataset=train_subset,
+            valid_dataset=valid_subset,
+            training_config=training_config,
             device=device,
             paths_config=paths_config
         )
         
-        # 最終トレーニング
-        print("最終トレーニング開始...")
-        final_history = final_trainer.train_mlm(num_epochs=best_training_config.mlm_epochs)
+        # MLM学習
+        print("MLM学習を開始します...")
+        trainer.train_mlm()
         
-        # 結果評価と保存
-        if final_history:
-            if isinstance(final_history, list):
-                if isinstance(final_history[0], dict):
-                    min_loss = min([log['loss'] for log in final_history])
-                else:
-                    min_loss = min(final_history)
-                print(f"最終最小ロス: {min_loss:.4f}")
-        
-        final_trainer.save_checkpoint("deep_fix_model/final_model")
-        print(f"最終モデルを保存しました: {os.path.join(deep_fix_dir, 'final_model.pt')}")
-        
-        final_trainer.close()
+        # 最終チェックポイント保存
+        final_model_path = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
+        trainer.save_checkpoint("final_model")
+        print(f"モデルを保存しました: {final_model_path}")
         
     except Exception as e:
         print(f"エラーが発生しました: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        if 'final_trainer' in locals():
-            final_trainer.close()
+        # リソース解放
+        if 'trainer' in locals():
+            trainer.close()
         
         print(f"=== 処理完了: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+
 
 if __name__ == "__main__":
     main()
