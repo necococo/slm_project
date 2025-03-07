@@ -40,7 +40,7 @@ def main():
     )
     
     # モデル設定
-    model_configs = [ModelConfig(
+    model_configs = [ModelConfig(num_layers=2
     )]
     
     # 学習設定
@@ -66,6 +66,18 @@ def main():
         try:
             train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
             valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
+            
+            # テスト用にデータセットの小さなサブセットを作成
+            dataset_sizes = [5000]  # テスト用のデータセットサイズ
+            
+            print(f"元のデータセットサイズ - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
+            
+            # デフォルトサブセットを準備（最小サイズで）
+            train_subset = train_dataset.select(range(min(dataset_sizes[0], len(train_dataset))))
+            valid_subset = valid_dataset.select(range(min(dataset_sizes[0]//10, len(valid_dataset))))
+            
+            print(f"テスト用サブセットサイズ - 学習: {len(train_subset)}件, 検証: {len(valid_subset)}件")
+            
         except Exception as e:
             print(f"データセットの読み込みエラー: {e}")
             print("既存のデータセットが見つかりません。CPU環境での前処理が必要です。")
@@ -101,35 +113,43 @@ def main():
             # トークナイザー設定（直接AutoTokenizerオブジェクトを設定）
             model_config.set_tokenizer(tokenizer)
             
-            for train_idx, training_config in enumerate(training_configs):
-                print(f"\n--- 学習構成 {train_idx+1}/{len(training_configs)} ---")
+            # サブセットサイズの異なるデータで実験
+            for size_idx, dataset_size in enumerate(dataset_sizes):
+                # データサイズに応じたサブセット作成
+                curr_train = train_dataset.select(range(min(dataset_size, len(train_dataset))))
+                curr_valid = valid_dataset.select(range(min(dataset_size // 10, len(valid_dataset))))
                 
-                # モデル初期化
-                model = WaveNetworkLM(model_config)
+                print(f"\n--- データセットサイズ: {dataset_size} (学習: {len(curr_train)}件, 検証: {len(curr_valid)}件) ---")
                 
-                # もしチェックポイントが存在すれば復元
-                if resume_checkpoint and os.path.exists(resume_checkpoint):
-                    from slm.utils import load_checkpoint
-                    load_checkpoint(resume_checkpoint, model)  # optimizer等も必要なら適宜復元してください
-                
-                # トレーナー初期化
-                trainer = Trainer(
-                    model=model,
-                    train_dataset=train_dataset,
-                    valid_dataset=valid_dataset,
-                    training_config=training_config,
-                    device=device,
-                    paths_config=paths_config
-                )
-                
-                # MLM学習
-                print("MLM学習を開始します...")
-                trainer.train_mlm()
-                
-                # 最終チェックポイント保存
-                final_model_path = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
-                trainer.save_checkpoint("final_model")
-                print(f"モデルを保存しました: {final_model_path}")
+                for train_idx, training_config in enumerate(training_configs):
+                    print(f"\n* 学習設定 {train_idx+1}/{len(training_configs)} *")
+                    
+                    # モデル初期化
+                    model = WaveNetworkLM(model_config)
+                    
+                    # もしチェックポイントが存在すれば復元
+                    if resume_checkpoint and os.path.exists(resume_checkpoint):
+                        from slm.utils import load_checkpoint
+                        load_checkpoint(resume_checkpoint, model)  # optimizer等も必要なら適宜復元してください
+                    
+                    # トレーナー初期化 - サブセットを使用
+                    trainer = Trainer(
+                        model=model,
+                        train_dataset=curr_train,  # サブセットを使用
+                        valid_dataset=curr_valid,  # サブセットを使用
+                        training_config=training_config,
+                        device=device,
+                        paths_config=paths_config
+                    )
+                    
+                    # MLM学習
+                    print("MLM学習を開始します...")
+                    trainer.train_mlm()
+                    
+                    # 最終チェックポイント保存
+                    final_model_path = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
+                    trainer.save_checkpoint("final_model")
+                    print(f"モデルを保存しました: {final_model_path}")
         
     except Exception as e:
         print(f"エラーが発生しました: {e}")
