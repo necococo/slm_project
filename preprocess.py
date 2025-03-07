@@ -142,6 +142,7 @@ def tokenize_dataset(dataset, tokenizer, max_length=128, batch_size=64, chunk_si
 
 def save_processed_dataset(tokenized_dataset, save_dir):
     """処理済みデータセットを保存します"""
+    # 親ディレクトリを含めて再帰的に作成
     os.makedirs(save_dir, exist_ok=True)
     print(f"\nデータセットを保存中: {save_dir}")
     
@@ -149,6 +150,10 @@ def save_processed_dataset(tokenized_dataset, save_dir):
         split_dir = os.path.join(save_dir, split)
         ds.save_to_disk(split_dir)
         print(f"  - {split}セットを保存しました: {split_dir}")
+        
+    # 保存した場所へのフルパスを表示
+    abs_path = os.path.abspath(save_dir)
+    print(f"\n保存完了: {abs_path}")
 
 def main():
     """メイン実行関数"""
