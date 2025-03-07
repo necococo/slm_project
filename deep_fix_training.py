@@ -1,33 +1,29 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# main.py
-# google colabでの実行を想定しています。
-
-# ①初回はランタイムをCPU環境で前処理を行い、データセットがディスクに保存され一旦終わるようになっています。ランタイムをGPU環境に切り替えてから再度 !python main.py を実行してください。データセットがdiskから読み込まれます。
-# ②学習の再開を行いたい場合は、コマンドライン引数 "resume" を渡して実行する（!python main.py resume）と、保存済みのチェックポイントから復元して学習を続行できます。
+"""
+Wave Network抜本的修正版トレーニングスクリプト
+ロスが7付近で停滞する問題に根本対策を施します
+"""
 
 import os
 import sys
 import torch
+import torch.nn as nn
+import numpy as np
 from datetime import datetime
+from datasets import load_from_disk
+from transformers import AutoTokenizer  # transformers直接使用に変更
+from torch.utils.data import DataLoader
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.trainer import Trainer
-# from slm.data_loader import get_dataset
-from slm.tokenizer import JapaneseTokenizer
+from slm.debug_wave import WaveDebugger
+from slm.collator import CustomCollator
+from slm.inference import sample_text
 
 def main():
-    """
-    How:
-        Wave Network言語モデルの学習を実行します。
-        1. 設定の初期化
-        2. データセットとトークナイザーの準備
-        3. モデルの初期化
-        4. トレーナーでMLM学習とDiffusion Fine-tuningを実行
-    """
-    # 開始メッセージ
-    print(f"=== Wave Network言語モデル学習 開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+    print(f"=== Wave Network抜本修正版学習 開始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
     # シード設定
     seed = 42
@@ -44,17 +40,19 @@ def main():
     )
     
     # モデル設定
-    model_config = ModelConfig(
-    )
+    model_configs = [ModelConfig(
+    )]
     
     # 学習設定
-    training_config = TrainingConfig(
-    )
+    training_configs = [TrainingConfig(
+    )]
     
     # ディレクトリ作成
     os.makedirs(paths_config.data_dir, exist_ok=True)
     os.makedirs(paths_config.checkpoint_dir, exist_ok=True)
     os.makedirs(paths_config.log_dir, exist_ok=True)
+    deep_fix_dir = os.path.join(paths_config.checkpoint_dir, "deep_fix_model")
+    os.makedirs(deep_fix_dir, exist_ok=True)
     
     # もし'resume'引数が指定されていたら、保存されたチェックポイントから復元する
     resume_checkpoint = None
@@ -63,90 +61,75 @@ def main():
         print(f"チェックポイントから復元します: {resume_checkpoint}")
     
     try:
-        # GPU環境なら、前処理済みのtokenizerとdatasetを読み込みます
-        if device.type == "cuda":
-            print("GPU環境と判断しました。保存済みのtokenizerとdatasetをロードします。")
-            if os.path.exists(paths_config.tokenizer_path):
-                tokenizer = JapaneseTokenizer(model_file=paths_config.tokenizer_path)
-            else:
-                # 修正: トークナイザーが存在しない場合はHugging Faceからダウンロード
-                print(f"トークナイザーが見つかりません。{paths_config.tokenizer_name}からダウンロードします...")
-                # トークナイザー保存用のディレクトリを作成
-                os.makedirs(os.path.dirname(paths_config.tokenizer_path), exist_ok=True)
-                
-                try:
-                    # まず一般的なファイル名でダウンロードを試みる
-                    possible_files = ["tokenizer.model", "spiece.model", "tokenizer_model.json", "tokenizer.json", "vocab.txt"]
-                    success = False
-                    
-                    for file_name in possible_files:
-                        try:
-                            print(f"{file_name}のダウンロードを試みます...")
-                            tokenizer = JapaneseTokenizer(
-                                hf_model=paths_config.tokenizer_name, 
-                                save_to=paths_config.tokenizer_path,
-                                model_file=None,
-                                filename=file_name  # 追加: ファイル名を指定
-                            )
-                            print(f"トークナイザーを保存しました: {paths_config.tokenizer_path}")
-                            success = True
-                            break
-                        except Exception as e:
-                            print(f"  {file_name}の読み込み失敗: {e}")
-                            continue
-                    
-                    if not success:
-                        raise ValueError("互換性のあるトークナイザーファイルが見つかりませんでした")
-                except Exception as e:
-                    print(f"トークナイザーのダウンロードに失敗しました: {str(e)}")
-                    print("AutoTokenizerを使用します...")
-                    from transformers import AutoTokenizer
-                    huggingface_tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
-                    # HuggingFaceのトークナイザーをJapaneseTokenizerのラッパーに変換
-                    tokenizer = JapaneseTokenizer.from_pretrained_tokenizer(huggingface_tokenizer)
-
-            from datasets import load_from_disk
+        # データセット読み込み
+        print("データセットをロード中...")
+        try:
             train_dataset = load_from_disk(os.path.join(paths_config.data_dir, "train_dataset"))
             valid_dataset = load_from_disk(os.path.join(paths_config.data_dir, "valid_dataset"))
-
-            # 学習用サブセット
-            train_subset = train_dataset.select(range(min(5000, len(train_dataset))))
-            valid_subset = valid_dataset.select(range(min(50, len(valid_dataset))))
-
-        else:
-            print("CPUランタイムです。GPU環境で再実行してください。")
-            exit(0)
+        except Exception as e:
+            print(f"データセットの読み込みエラー: {e}")
+            print("既存のデータセットが見つかりません。CPU環境での前処理が必要です。")
+            sys.exit(1)
         
-        # ここで model_config に tokenizer をセットする
-        model_config.set_tokenizer(tokenizer)
+        # トークナイザー読み込み（transformers AutoTokenizerを直接使用）
+        print("トークナイザーをロード中...")
+        try:
+            # AutoTokenizerを使用
+            tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
+            print(f"Hugging Face tokenizer loaded: {paths_config.tokenizer_name}")
+            print(f"語彙サイズ: {len(tokenizer.vocab) if hasattr(tokenizer, 'vocab') else tokenizer.vocab_size}")
+        except Exception as e:
+            print(f"トークナイザー読み込みエラー: {e}")
+            sys.exit(1)
+            
+        print(f"データセットサイズ: {len(train_dataset)}")
         
-        # モデル初期化
-        print("モデルを初期化中...")
-        model = WaveNetworkLM(model_config)
-        
-        # もしチェックポイントが存在すれば復元
-        if resume_checkpoint and os.path.exists(resume_checkpoint):
-            from slm.utils import load_checkpoint
-            load_checkpoint(resume_checkpoint, model)  # optimizer等も必要なら適宜復元してください
-        
-        # トレーナー初期化
-        trainer = Trainer(
-            model=model,
-            train_dataset=train_subset,
-            valid_dataset=valid_subset,
-            training_config=training_config,
-            device=device,
-            paths_config=paths_config
+        # テスト用のバッチを取得（勾配フロー解析用）
+        collator = CustomCollator(
+            tokenizer=tokenizer, 
+            model_config=model_configs[0],
+            mlm=True,
+            mlm_probability=0.15,
+            mask_token_id=tokenizer.mask_token_id
         )
         
-        # MLM学習
-        print("MLM学習を開始します...")
-        trainer.train_mlm()
-        
-        # 最終チェックポイント保存
-        final_model_path = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
-        trainer.save_checkpoint("final_model")
-        print(f"モデルを保存しました: {final_model_path}")
+        # 実験ループ
+        for model_idx, model_config in enumerate(model_configs):
+            print(f"\n=== モデル構成 {model_idx+1}/{len(model_configs)} ===")
+            print(f"hidden_size: {model_config.hidden_size}, layers: {model_config.num_layers}, norm: {model_config.norm_scheme}")
+            
+            # トークナイザー設定（直接AutoTokenizerオブジェクトを設定）
+            model_config.set_tokenizer(tokenizer)
+            
+            for train_idx, training_config in enumerate(training_configs):
+                print(f"\n--- 学習構成 {train_idx+1}/{len(training_configs)} ---")
+                
+                # モデル初期化
+                model = WaveNetworkLM(model_config)
+                
+                # もしチェックポイントが存在すれば復元
+                if resume_checkpoint and os.path.exists(resume_checkpoint):
+                    from slm.utils import load_checkpoint
+                    load_checkpoint(resume_checkpoint, model)  # optimizer等も必要なら適宜復元してください
+                
+                # トレーナー初期化
+                trainer = Trainer(
+                    model=model,
+                    train_dataset=train_dataset,
+                    valid_dataset=valid_dataset,
+                    training_config=training_config,
+                    device=device,
+                    paths_config=paths_config
+                )
+                
+                # MLM学習
+                print("MLM学習を開始します...")
+                trainer.train_mlm()
+                
+                # 最終チェックポイント保存
+                final_model_path = os.path.join(paths_config.checkpoint_dir, "final_model.pt")
+                trainer.save_checkpoint("final_model")
+                print(f"モデルを保存しました: {final_model_path}")
         
     except Exception as e:
         print(f"エラーが発生しました: {e}")

@@ -57,10 +57,13 @@ class ModelConfig:
         なければ初期化時に設定された値を使用
         """
         if self.tokenizer is not None:
-            if hasattr(self.tokenizer, 'sp') and hasattr(self.tokenizer.sp, 'get_piece_size'):
-                return self.tokenizer.sp.get_piece_size()
+            # transformers AutoTokenizerのサポートを追加
+            if hasattr(self.tokenizer, 'vocab'):
+                return len(self.tokenizer.vocab)
             elif hasattr(self.tokenizer, 'vocab_size'):
                 return self.tokenizer.vocab_size
+            elif hasattr(self.tokenizer, 'sp') and hasattr(self.tokenizer.sp, 'get_piece_size'):
+                return self.tokenizer.sp.get_piece_size()
             else:
                 raise AttributeError("トークナイザーからvocab_sizeを取得できません")
         
