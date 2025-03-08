@@ -256,8 +256,8 @@ def save_processed_dataset(tokenized_dataset, save_dir):
     
     for split, ds in tokenized_dataset.items():
         split_dir = os.path.join(save_dir, split)
-        # 保存先ディレクトリを確実に作成
-        os.makedirs(os.path.dirname(split_dir), exist_ok=True)
+        # 直接ディレクトリを作成（dirnameは不要）
+        os.makedirs(split_dir, exist_ok=True)
         ds.save_to_disk(split_dir)
         print(f"  - {split}セットを保存しました: {split_dir}")
         
@@ -312,10 +312,9 @@ def main():
         save_dir = args.save_dir
     else:
         # デフォルトの保存先（オリジナル長を明示）
-        # data_dirは既にディレクトリ階層を含んでいるので、下にprocessed_rawを追加
         save_dir = os.path.join(paths_config.data_dir, "processed_raw")
-        # ディレクトリが確実に存在するようにする
-        os.makedirs(os.path.dirname(save_dir), exist_ok=True)
+        # 直接ディレクトリ作成（dirnameは不要）
+        os.makedirs(save_dir, exist_ok=True)
     
     # 処理済みデータセット保存
     save_processed_dataset(tokenized_dataset, save_dir)

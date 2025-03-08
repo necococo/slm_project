@@ -153,7 +153,8 @@ class PathsConfig:
         if language == "en":
             # 英語用のデフォルト設定
             self.dataset_name = "wikitext"
-            self.dataset_subset = "wikitext-2-raw-v1"
+            # subset名を正しいものに修正（raw版ではなく標準版を使用）
+            self.dataset_subset = "wikitext-2-v1"  # raw版ではなく標準版
             self.tokenizer_name = "gpt2"
             self.tokenizer_file = "gpt2_tokenizer.json"
         else:
@@ -180,10 +181,9 @@ class PathsConfig:
     @property
     def tokenizer_path(self) -> str:
         """トークナイザーモデルのパスを返します"""
-        tknr_path = os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_name, self.tokenizer_file)
-        # ファイルではなく親ディレクトリを作成する必要がある
-        os.makedirs(os.path.dirname(tknr_path), exist_ok=True)
-        return tknr_path
+        tknr_dir = os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_name)
+        os.makedirs(tknr_dir, exist_ok=True)
+        return os.path.join(tknr_dir, self.tokenizer_file)
         
     @property
     def model_save_dir(self) -> str:
