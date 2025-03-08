@@ -252,7 +252,7 @@ def setup_tokenizer_and_model(paths_config, args):
     # モデル初期化
     model = WaveNetworkLM(model_config)
     print(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
-    print(f"シーケンス長: {args.sequence_length}, 隠れ層サイズ: {args.hidden_size}")
+    print(f"シーケンス長: {args.sequence_length}, 隠れ層サイズ: {args.hidden_size}, 層: {args.num_layers}")
     print(f"使用する損失関数: {'Cut Cross Entropy' if model.use_cut_cross_entropy else '通常のCross Entropy'}")
     
     return tokenizer, model, model_config
