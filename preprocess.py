@@ -44,6 +44,14 @@ def setup_paths_and_tokenizer(language='en'):
     print(f"トークナイザーをロード中: {paths_config.tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
     
+    # GPT-2トークナイザーの場合、パディングトークンが設定されていないため追加
+    if paths_config.tokenizer_name == "gpt2" and tokenizer.pad_token is None:
+        print("GPT-2トークナイザーにパディングトークンを設定します")
+        # EOS（文末）トークンをパディングトークンとしても使用
+        tokenizer.pad_token = tokenizer.eos_token
+        # または新しいパディングトークンを追加する場合:
+        # tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    
     return paths_config, tokenizer
 
 def download_and_prepare_dataset(paths_config, max_samples=None):
@@ -80,6 +88,10 @@ def download_and_prepare_dataset(paths_config, max_samples=None):
 def tokenize_dataset(dataset, tokenizer, max_length=128, batch_size=64, chunk_size=1000, num_workers=4):
     """データセットをトークン化します"""
     def tokenize_function(examples):
+        # トークナイザーがパディングトークンを持っているか確認
+        if tokenizer.pad_token is None:
+            raise ValueError("トークナイザーにパディングトークンが設定されていません")
+            
         outputs = tokenizer(
             examples["text"],
             truncation=True,
