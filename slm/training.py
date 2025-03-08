@@ -44,20 +44,37 @@ def parse_arguments():
                        help='バッチサイズ')
     parser.add_argument('--hidden_size', type=int, default=256,
                        help='隠れ層のサイズ')
-    parser.add_argument('--learning_rate', type=float, default=1e-3,
-                       help='学習率')
+    parser.add_argument('--learning_rate', type=float, default=1e-4,
+                       help='学習率 (低めに設定)')
     parser.add_argument('--random_seed', type=int, default=42,
                        help='乱数シード値')
     parser.add_argument('--use_cut_cross_entropy', action='store_true', default=True,
                        help='Cut Cross Entropyを使用する（デフォルト: True）')
     parser.add_argument('--no_cut_cross_entropy', action='store_false', dest='use_cut_cross_entropy',
                        help='通常のCross Entropyを使用する')
-    parser.add_argument('--warmup_steps', type=int, default=100,
-                       help='学習率ウォームアップのステップ数')
+    parser.add_argument('--warmup_steps', type=int, default=500,
+                       help='学習率ウォームアップのステップ数 (増加)')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                        help='Weight decayの強さ')
     parser.add_argument('--num_layers', type=int, default=1,
                        help='wave networkのlayer数')
+    parser.add_argument('--independent_norm', action='store_true', default=True,
+                       help='実部と虚部を独立して正規化（デフォルト: True）')
+    parser.add_argument('--no_independent_norm', action='store_false', dest='independent_norm',
+                       help='実部と虚部を独立せず正規化')
+    parser.add_argument('--real_scale_base', type=float, default=1.0,
+                       help='実部スケール係数のベース値')
+    parser.add_argument('--real_scale_factor', type=float, default=0.2,
+                       help='レイヤーごとの実部スケール増加量')
+    parser.add_argument('--clip_value', type=float, default=1.0,
+                       help='勾配クリッピングの値')
+    parser.add_argument('--dropout_prob', type=float, default=0.1,
+                       help='ドロップアウト率')
+    parser.add_argument('--activation', type=str, default='gelu',
+                       help='活性化関数')
+    parser.add_argument('--norm_scheme', type=str, default='post',
+                       help='LayerNorm方式')
+    
     return parser.parse_args()
 
 def setup_environment(args):
@@ -239,13 +256,18 @@ def setup_tokenizer_and_model(paths_config, args):
     # モデル設定
     model_config = ModelConfig(
         hidden_size=args.hidden_size,
-        num_layers=args.num_layers,     # レイヤー数も少なく
+        num_layers=args.num_layers,     
         vocab_size=None,  # トークナイザーから自動取得
         max_seq_len=args.sequence_length,
-        dropout_prob=0.1,
+        dropout_prob=args.dropout_prob,
         use_rope=True,
         use_wavelet=False,  # 波変換は今回無効に
-        use_cut_cross_entropy=getattr(args, 'use_cut_cross_entropy', True)  # 引数から取得、なければTrue
+        use_cut_cross_entropy=getattr(args, 'use_cut_cross_entropy', True),
+        independent_norm=getattr(args, 'independent_norm', True),
+        real_scale_base=getattr(args, 'real_scale_base', 1.0),
+        real_scale_factor=getattr(args, 'real_scale_factor', 0.2),
+        activation=args.activation,
+        norm_scheme=args.norm_scheme
     )
     model_config.set_tokenizer(tokenizer)
     
@@ -320,15 +342,15 @@ def train_model(model, train_dataset, valid_dataset, model_config, device, paths
     """モデルを学習します"""
     # 学習設定
     training_config = TrainingConfig(
-        learning_rate=1e-3,  # 高めの学習率を維持
-        batch_size=8,        # 小さいバッチサイズ
-        mlm_epochs=2,        # 少ないエポック数
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+        mlm_epochs=args.epochs,
         mlm_probability=0.15,
-        weight_decay=0.01,
-        warmup_steps=100,
+        weight_decay=args.weight_decay,
+        warmup_steps=args.warmup_steps,
         use_amp=True,
         clip_grad_norm=True,
-        clip_value=1.0
+        clip_value=args.clip_value
     )
     
     # トレーナー初期化
@@ -561,7 +583,7 @@ def main():
             warmup_steps=getattr(args, 'warmup_steps', 100),
             use_amp=True,
             clip_grad_norm=True,
-            clip_value=1.0  # 勾配爆発を防ぐ適切な値を設定
+            clip_value=args.clip_value  # 勾配爆発を防ぐ適切な値を設定
         )
         
         # トレーナー初期化とトレーニング

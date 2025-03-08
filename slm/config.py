@@ -22,12 +22,11 @@ class ModelConfig:
         norm_scheme: 'pre'または'post'のLayerNorm方式を選択
         activation: 活性化関数の選択
         complex_init_scale: 複素数初期化のスケール
-        use_cut_cross_entropy: Cut Cross Entropyを使用するかどうか
     """
     def __init__(
         self,
-        hidden_size: int = 768,  # より大きな値に調整（例：1024）
-        num_layers: int = 6,     # レイヤー数を増やす（例：6-12）
+        hidden_size: int = 768,
+        num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
         max_seq_len: int = 512,
         dropout_prob: float = 0.2,
@@ -37,7 +36,6 @@ class ModelConfig:
         norm_scheme: str = "post",  # 追加: 'pre'または'post'のLayerNorm方式を選択
         activation: str = "gelu",   # 追加: 活性化関数の選択
         complex_init_scale: float = 0.02,  # 追加: 複素数初期化のスケール
-        use_cut_cross_entropy: bool = True,  # Cut Cross Entropyを使用するかどうか
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -51,7 +49,6 @@ class ModelConfig:
         # self.norm_scheme = norm_scheme  # 追加: Pre-LN vs Post-LN
         self.activation = activation  # 追加: 活性化関数
         self.complex_init_scale = complex_init_scale  # 追加: 複素数初期化スケール
-        self.use_cut_cross_entropy = use_cut_cross_entropy  # インスタンス変数として設定
     
     @property
     def vocab_size(self) -> int:
@@ -89,9 +86,9 @@ class TrainingConfig:
     """
     def __init__(
         self,
-        learning_rate: float = 1e-3,  # 1e-4だと数値が不安定になりロスにnanがでる
-        batch_size: int = 32,
-        mlm_epochs: int = 1,
+        learning_rate: float = 1e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
+        batch_size: int = 96,
+        mlm_epochs: int = 3,
         mlm_probability: float = 0.2,
         diffusion_epochs: int = 0,
         weight_decay: float = 0.01,
@@ -119,16 +116,6 @@ class TrainingConfig:
         self.gradient_accumulation_steps = accumulation_steps  # 互換性のため
         self.clip_grad_norm = clip_grad_norm
         self.clip_value = clip_value  # 追加: 勾配クリッピング値
-        
-    def get_effective_learning_rate(self) -> float:
-        """
-        実際に使用される学習率を取得します。
-        auto_adjust_learning_rateがFalseの場合、設定された学習率をそのまま返します。
-        
-        Returns:
-            float: 使用する学習率
-        """
-        return self.learning_rate
 
 
 class PathsConfig:
@@ -146,99 +133,38 @@ class PathsConfig:
     def __init__(
         self,
         base_dir: str = "/content/drive/MyDrive/slm",
-        dataset_name = None,
-        dataset_subset = None,
-        tokenizer_name = None, # 修正: 正しいリポジトリ名
-        tokenizer_file = None, # 追加: 実際のファイル名を指定
-        language: str = "ja"  # 追加: 言語選択（'ja'または'en'）
+        dataset_name: str = "singletongue/wikipedia-utils",
+        dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
+        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking", # 修正: 正しいリポジトリ名
+        tokenizer_file: str = "tokenizer_model.json" # 追加: 実際のファイル名を指定
     ) -> None:
-        # 言語に基づいてデータセットとトークナイザーを設定
-        if language == "en":
-            # 英語用のデフォルト設定 - より大きなデータセットに変更
-            self.dataset_name = "wikitext"
-            # wikitext-2-v1からwikitext-103-v1に変更
-            self.dataset_subset = "wikitext-103-v1"  # より長いシーケンスを含む大規模データセット
-            self.tokenizer_name = "gpt2"
-            self.tokenizer_file = "gpt2_tokenizer.json"
-        else:
-            # 日本語用（既存の設定を維持）
-            self.dataset_name = "singletongue/wikipedia-utils"
-            self.dataset_subset = "corpus-jawiki-20230403-filtered-large"
-            self.tokenizer_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
-            self.tokenizer_file = "tokenizer_model.json"
-
         self.base_dir = base_dir
+        self.data_dir = os.path.join(self.base_dir, "data")
         self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
         self.log_dir = os.path.join(self.base_dir, "logs")
-        self.visualization_dir = os.path.join(self.log_dir, "visualizations")  # 追加: 可視化結果保存ディレクトリ
-        self.language = language
-        self.data_dir = os.path.join(self.base_dir, "data", self.language, self.dataset_name, self.dataset_subset)
+        self.dataset_name = dataset_name
+        self.dataset_subset = dataset_subset
+        self.tokenizer_name = tokenizer_name
+        self.tokenizer_file = tokenizer_file  # 追加: ファイル名を保存
     
     @property
     def dataset_dir(self) -> str:
         """データセットの保存ディレクトリパスを返します"""
-        # 無限再帰を修正 - self.dataset_dirを呼び出すと自分自身を呼び出してしまう
-        os.makedirs(self.data_dir, exist_ok=True)
-        return self.data_dir
+        if self.dataset_subset:
+            return os.path.join(self.data_dir, self.dataset_name, self.dataset_subset)
+        return os.path.join(self.data_dir, self.dataset_name)
         
     @property
     def tokenizer_path(self) -> str:
         """トークナイザーモデルのパスを返します"""
-        tknr_dir = os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_name)
-        os.makedirs(tknr_dir, exist_ok=True)
-        return os.path.join(tknr_dir, self.tokenizer_file)
+        return os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_file)
         
     @property
     def model_save_dir(self) -> str:
         """モデル保存ディレクトリを返します"""
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
         return self.checkpoint_dir
         
     @property
     def tensorboard_log_dir(self) -> str:
-        """TensorBoardのログディレクトリを作って返します"""
-        tb_log_dir = os.path.join(self.log_dir, "tensorboard")
-        os.makedirs(tb_log_dir, exist_ok=True)
-        return tb_log_dir
-        
-    @property
-    def visualization_path(self) -> str:
-        """可視化結果の保存パスを返します"""
-        os.makedirs(self.visualization_dir, exist_ok=True)
-        return self.visualization_dir
-        
-    @staticmethod
-    def safe_index(idx):
-        """
-        NumPy整数型やその他の特殊な整数型をPythonネイティブのint型に変換します。
-        これによりdatasetsライブラリなどでの型エラーを防止します。
-        
-        Args:
-            idx: 変換する対象のインデックス値
-            
-        Returns:
-            int: Pythonネイティブのint型に変換された値
-        """
-        if hasattr(idx, 'item'):  # NumPyの数値型はitem()メソッドを持っている
-            return idx.item()
-        return int(idx)  # その他の場合は通常のint変換を試みる
-        
-    @staticmethod
-    def safe_dataset_access(dataset, idx, key=None):
-        """
-        データセットへの安全なアクセスを提供するヘルパーメソッド。
-        NumPy型のインデックスを適切に処理し、オプションでデータの特定のフィールドを取得します。
-        
-        Args:
-            dataset: アクセス対象のデータセット
-            idx: アクセスするインデックス（int, numpy.int64などの型を受け付ける）
-            key: 取得するデータのキー（例：'input_ids'）、Noneの場合は全データを返す
-            
-        Returns:
-            指定したデータセットの項目またはその特定フィールド
-        """
-        safe_idx = PathsConfig.safe_index(idx)
-        item = dataset[safe_idx]
-        if key is not None:
-            return item[key]
-        return item
+        """TensorBoardのログディレクトリを返します"""
+        return os.path.join(self.log_dir, "tensorboard")
