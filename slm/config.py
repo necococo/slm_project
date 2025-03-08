@@ -151,10 +151,10 @@ class PathsConfig:
     ) -> None:
         # 言語に基づいてデータセットとトークナイザーを設定
         if language == "en":
-            # 英語用のデフォルト設定
+            # 英語用のデフォルト設定 - より大きなデータセットに変更
             self.dataset_name = "wikitext"
-            # subset名を正しいものに修正（raw版ではなく標準版を使用）
-            self.dataset_subset = "wikitext-2-v1"  # raw版ではなく標準版
+            # wikitext-2-v1からwikitext-103-v1に変更
+            self.dataset_subset = "wikitext-103-v1"  # より長いシーケンスを含む大規模データセット
             self.tokenizer_name = "gpt2"
             self.tokenizer_file = "gpt2_tokenizer.json"
         else:

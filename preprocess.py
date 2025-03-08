@@ -195,12 +195,13 @@ def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_wor
     print(f"並列ワーカー数: {num_workers}")
     
     # トークナイザーのテスト
-    test_text = "This is a test sentence."
+    test_text = "This is a test sentence for sequence length verification."
     test_tokens = tokenizer(test_text)
     print(f"\nトークナイザーテスト:")
     print(f"入力: '{test_text}'")
     print(f"出力: {test_tokens}")
     print(f"デコード: '{tokenizer.decode(test_tokens['input_ids'])}'")
+    print(f"トークン比率: {len(test_tokens['input_ids'])/len(test_text):.2f} トークン/文字")
     
     tokenized_dataset = {}
     
@@ -304,7 +305,17 @@ def main():
         print(f"  - 最小: {min(split_lengths)} トークン")
         print(f"  - 最大: {max(split_lengths)} トークン")
         print(f"  - 平均: {sum(split_lengths)/len(split_lengths):.1f} トークン")
+        print(f"  - メディアン: {sorted(split_lengths)[len(split_lengths)//2]} トークン")
+        print(f"  - 90パーセンタイル: {sorted(split_lengths)[int(len(split_lengths) * 0.9)]} トークン")
         print(f"  - 95パーセンタイル: {sorted(split_lengths)[int(len(split_lengths) * 0.95)]} トークン")
+        print(f"  - 99パーセンタイル: {sorted(split_lengths)[int(len(split_lengths) * 0.99)]} トークン")
+        
+        # 2048以上のサンプル数をカウント
+        long_samples = [l for l in split_lengths if l >= 2048]
+        if long_samples:
+            print(f"  - 2048以上のサンプル数: {len(long_samples)} ({len(long_samples)/len(split_lengths)*100:.2f}%)")
+            print(f"  - 最長サンプルの長さ: {max(long_samples)} トークン")
+        
         lengths.extend(split_lengths)
     
     # 保存先設定
