@@ -360,29 +360,41 @@ def extract_embeddings(model, dataset, tokenizer, model_config, device, num_samp
             input_ids = torch.tensor([example["input_ids"][:model_config.max_seq_len]]).to(device)
             attention_mask = torch.tensor([example["attention_mask"][:model_config.max_seq_len]]).to(device)
             
-            # WaveNetworkLMモデルの正しい埋め込み層にアクセス
-            wave_embedding = model.token_embedding(input_ids)
+            # まずトークン埋め込みを取得
+            token_embedding = model.token_embedding(input_ids)
             
-            # 埋め込み層は複素数ではなく単なる実数値のベクトル
-            real_part = wave_embedding  # 実部のみ
-            imag_part = torch.zeros_like(real_part)  # 虚部はゼロとして扱う
+            # 波表現に変換 (モジュールからcompute_wave_representation関数をインポート)
+            from slm.modules.wave_network import compute_wave_representation
+            
+            # トークンレベル (ローカル) 波表現を計算
+            real_part_token, imag_part_token = compute_wave_representation(token_embedding, global_mode=False)
+            
+            # 文章レベル (グローバル) 波表現を計算
+            real_part_sent, imag_part_sent = compute_wave_representation(token_embedding, global_mode=True)
             
             # センテンスレベル埋め込み（シーケンスの平均）
-            mask_expanded = attention_mask.unsqueeze(-1).expand_as(real_part)
-            sentence_real = (real_part * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
-            sentence_imag = (imag_part * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
+            mask_expanded = attention_mask.unsqueeze(-1).expand_as(real_part_token)
+            sentence_real = (real_part_sent * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
+            sentence_imag = (imag_part_sent * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
             
             # 結果を収集
             sentence_real_embeds.append(sentence_real.cpu().numpy())
             sentence_imag_embeds.append(sentence_imag.cpu().numpy())
-            token_real_embeds.append(real_part[0].cpu().numpy())  # バッチ内の最初の例
-            token_imag_embeds.append(imag_part[0].cpu().numpy())  # バッチ内の最初の例
+            token_real_embeds.append(real_part_token[0].cpu().numpy())  # バッチ内の最初の例
+            token_imag_embeds.append(imag_part_token[0].cpu().numpy())  # バッチ内の最初の例
     
     # 結果を連結
     sentence_real_embeds = np.concatenate(sentence_real_embeds, axis=0)
     sentence_imag_embeds = np.concatenate(sentence_imag_embeds, axis=0)
     token_real_embeds = np.concatenate(token_real_embeds, axis=0)
     token_imag_embeds = np.concatenate(token_imag_embeds, axis=0)
+    
+    # 統計情報をログ出力して確認
+    print("\n波表現の統計情報:")
+    print(f"トークンレベル実部 - 平均値: {np.mean(token_real_embeds):.6f}, 標準偏差: {np.std(token_real_embeds):.6f}")
+    print(f"トークンレベル虚部 - 平均値: {np.mean(token_imag_embeds):.6f}, 標準偏差: {np.std(token_imag_embeds):.6f}")
+    print(f"センテンスレベル実部 - 平均値: {np.mean(sentence_real_embeds):.6f}, 標準偏差: {np.std(sentence_real_embeds):.6f}")
+    print(f"センテンスレベル虚部 - 平均値: {np.mean(sentence_imag_embeds):.6f}, 標準偏差: {np.std(sentence_imag_embeds):.6f}")
     
     return {
         'sentence_real': sentence_real_embeds,
