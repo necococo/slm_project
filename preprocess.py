@@ -22,9 +22,9 @@ def parse_arguments():
                        help='処理する言語（en: 英語, ja: 日本語）')
     parser.add_argument('--chunk_size', type=int, default=1000,
                        help='一度に処理するチャンクサイズ')
-    parser.add_argument('--save_dir', type=str, default=None,
+    parser.add_argument('--save_dir', type=str, default="/content/drive/MyDrive/slm/data/en/processed",
                        help='処理済みデータの保存先（デフォルト: 自動設定）')
-    parser.add_argument('--num_workers', type=int, default=4,
+    parser.add_argument('--num_workers', type=int, default=8,
                        help='データ処理に使用するワーカー数（並列処理）')
     return parser.parse_args()
 
@@ -101,7 +101,7 @@ def calculate_optimal_sequence_length(dataset, tokenizer, sample_size=1000):
     print(f"推奨シーケンス長: {suggested_length}")
     return suggested_length
 
-def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_workers=4):
+def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_workers=8):
     """データセットをトークン化します"""
     def tokenize_function(examples):
         # トークナイザーがパディングトークンを持っているか確認
@@ -120,7 +120,6 @@ def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_wor
     print("注意: 切り詰めやパディングは行わず、元のテキスト長を維持します。トレーニング時にCollatorが処理します。")
     print(f"並列ワーカー数: {num_workers}")
     
-    # 大きなデータセットを効率的に処理するためにチャンク化
     tokenized_dataset = {}
     
     for split, ds in dataset.items():
@@ -203,14 +202,6 @@ def main():
     
     # データセットのダウンロードと準備（サイズ調整なし）
     dataset = download_and_prepare_dataset(paths_config)
-    
-    # 最大シーケンス長の設定 (統計情報収集のみ使用)
-    max_length = args.max_length
-    if args.auto_max_length:
-        max_length = calculate_optimal_sequence_length(dataset, tokenizer)
-        print(f"自動計算したシーケンス長: {max_length} (統計情報のみ、切り詰めは行いません)")
-    else:
-        print(f"注意: 指定されたmax_length={max_length}は統計情報のみに使用され、切り詰めは行いません")
     
     # トークン化 (サイズ調整なし)
     tokenized_dataset = tokenize_dataset(
