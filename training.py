@@ -26,12 +26,14 @@ def parse_arguments():
                        help='前処理済みデータセットのディレクトリ（指定がなければ新規ダウンロード）')
     parser.add_argument('--language', type=str, default='en', choices=['en', 'ja'],
                        help='使用する言語（en: 英語, ja: 日本語）')
-    parser.add_argument('--max_samples', type=int, default=500,
-                       help='使用するサンプル数の上限')
     parser.add_argument('--train_samples', type=int, default=None,
-                       help='学習データセットのサンプル数（指定しない場合はmax_samplesを使用）')
+                       help='学習データセットのサンプル数（指定しない場合は全データを使用）')
     parser.add_argument('--valid_samples', type=int, default=None,
                        help='検証データセットのサンプル数（指定しない場合はtrain_samplesの1/10）')
+    parser.add_argument('--sample_ratio', type=float, default=None,
+                       help='データセットの使用割合 (0.0-1.0)')
+    parser.add_argument('--sample_strategy', type=str, default='first', choices=['first', 'random'],
+                       help='サンプリング方法 (first: 先頭からサンプル, random: ランダムサンプル)')
     parser.add_argument('--sequence_length', type=int, default=128,
                        help='使用するシーケンス長 (入力トークン数)')
     parser.add_argument('--epochs', type=int, default=2,
@@ -76,10 +78,6 @@ def setup_environment(args):
 
 def load_dataset_from_disk_or_download(paths_config, args):
     """ディスクから前処理済みデータセットを読み込むか、新規ダウンロードします"""
-    # サンプル数の計算
-    train_samples = args.train_samples if args.train_samples is not None else args.max_samples
-    valid_samples = args.valid_samples if args.valid_samples is not None else max(1, train_samples // 10)
-    
     if args.data_dir and os.path.exists(args.data_dir):
         print(f"前処理済みデータセットを読み込み中: {args.data_dir}")
         try:
@@ -88,52 +86,70 @@ def load_dataset_from_disk_or_download(paths_config, args):
             
             print(f"データセット全体のサイズ - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
             
-            # サイズ制限（指定サンプル数に調整）
-            if train_samples < len(train_dataset):
-                # ランダムサンプリングを行う場合
-                # indices = np.random.choice(len(train_dataset), train_samples, replace=False)
-                # train_dataset = train_dataset.select(indices)
-                
-                # または先頭から指定数を選択
-                train_dataset = train_dataset.select(range(train_samples))
-                
-            if valid_samples < len(valid_dataset):
-                # valid_indices = np.random.choice(len(valid_dataset), valid_samples, replace=False)
-                # valid_dataset = valid_dataset.select(valid_indices)
-                
-                valid_dataset = valid_dataset.select(range(valid_samples))
-                
-            print(f"データセットを調整しました - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
-                
+            # サンプル数調整処理
+            train_dataset, valid_dataset = adjust_dataset_size(train_dataset, valid_dataset, args)
+            
             return {"train": train_dataset, "validation": valid_dataset}
         except Exception as e:
             print(f"前処理済みデータセットの読み込みエラー: {e}")
             print("新規ダウンロードを試みます...")
     
     # 新規ダウンロード
-    return load_english_dataset(paths_config, train_samples, valid_samples)
+    dataset = load_english_dataset(paths_config)
+    
+    # サンプル数調整処理
+    dataset["train"], dataset["validation"] = adjust_dataset_size(dataset["train"], dataset["validation"], args)
+    
+    return dataset
 
-def load_english_dataset(paths_config, train_samples=1000, valid_samples=None):
-    """小規模な英語データセットをロードします"""
-    if valid_samples is None:
-        valid_samples = max(1, train_samples // 10)
-        
+def adjust_dataset_size(train_dataset, valid_dataset, args):
+    """データセットのサイズを実行時引数に基づいて調整します"""
+    original_train_size = len(train_dataset)
+    original_valid_size = len(valid_dataset)
+    
+    # 訓練データサイズの決定
+    train_size = original_train_size
+    
+    # 明示的なサンプル数が指定された場合
+    if args.train_samples is not None:
+        train_size = min(args.train_samples, original_train_size)
+    # 割合が指定された場合
+    elif args.sample_ratio is not None:
+        train_size = int(original_train_size * args.sample_ratio)
+    
+    # 検証データサイズの決定
+    valid_size = original_valid_size
+    if args.valid_samples is not None:
+        valid_size = min(args.valid_samples, original_valid_size)
+    elif args.train_samples is not None or args.sample_ratio is not None:
+        # 明示的な指定がない場合、訓練データの1/10（最低1サンプル）
+        valid_size = max(1, min(int(train_size * 0.1), original_valid_size))
+    
+    # サイズ調整が必要な場合
+    if train_size < original_train_size or valid_size < original_valid_size:
+        if args.sample_strategy == 'random':
+            # ランダムサンプリング
+            train_indices = np.random.choice(original_train_size, train_size, replace=False)
+            valid_indices = np.random.choice(original_valid_size, valid_size, replace=False)
+            train_dataset = train_dataset.select(train_indices)
+            valid_dataset = valid_dataset.select(valid_indices)
+            print(f"ランダムサンプリング - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
+        else:
+            # デフォルト: 先頭からサンプリング
+            train_dataset = train_dataset.select(range(train_size))
+            valid_dataset = valid_dataset.select(range(valid_size))
+            print(f"先頭からサンプリング - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
+    
+    return train_dataset, valid_dataset
+
+def load_english_dataset(paths_config):
+    """英語データセットをロードします（サイズ調整なし）"""
     print(f"データセットをダウンロード中: {paths_config.dataset_name}/{paths_config.dataset_subset}")
     
     # WikiText-2データセットをロード
     try:
         dataset = load_dataset(paths_config.dataset_name, paths_config.dataset_subset)
-        print(f"データセットをロードしました: {len(dataset['train'])}件（学習全体）")
-        
-        # データセットサイズを指定サイズに調整
-        if train_samples and train_samples < len(dataset['train']):
-            dataset['train'] = dataset['train'].select(range(train_samples))
-            
-        if valid_samples and valid_samples < len(dataset['validation']):
-            dataset['validation'] = dataset['validation'].select(range(valid_samples))
-            
-        print(f"データセットを調整しました - 学習: {len(dataset['train'])}件, 検証: {len(dataset['validation'])}件")
-            
+        print(f"データセットをロードしました - 学習: {len(dataset['train'])}件, 検証: {len(dataset['validation'])}件")
         return dataset
     except Exception as e:
         print(f"データセットのダウンロードエラー: {e}")

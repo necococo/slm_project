@@ -20,12 +20,6 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='英語データセット前処理スクリプト')
     parser.add_argument('--language', type=str, default='en', choices=['en', 'ja'],
                        help='処理する言語（en: 英語, ja: 日本語）')
-    parser.add_argument('--max_samples', type=int, default=None,
-                       help='処理するサンプル数の上限（デフォルト: すべて）')
-    parser.add_argument('--train_samples', type=int, default=None,
-                       help='学習データセットのサンプル数（指定しない場合はmax_samplesを使用）')
-    parser.add_argument('--valid_samples', type=int, default=None,
-                       help='検証データセットのサンプル数（指定しない場合はtrain_samplesの1/10）')
     parser.add_argument('--chunk_size', type=int, default=1000,
                        help='一度に処理するチャンクサイズ')
     parser.add_argument('--save_dir', type=str, default=None,
@@ -56,36 +50,15 @@ def setup_paths_and_tokenizer(language='en'):
     
     return paths_config, tokenizer
 
-def download_and_prepare_dataset(paths_config, args):
-    """データセットをダウンロードして基本的な前処理を行います"""
+def download_and_prepare_dataset(paths_config):
+    """データセットをダウンロードします（サイズ調整なし）"""
     print(f"データセットをダウンロード中: {paths_config.dataset_name}/{paths_config.dataset_subset}")
-    
-    # サンプル数の計算
-    max_samples = args.max_samples
-    train_samples = args.train_samples if args.train_samples is not None else max_samples
-    valid_samples = args.valid_samples if args.valid_samples is not None else (None if train_samples is None else max(1, train_samples // 10))
     
     try:
         dataset = load_dataset(paths_config.dataset_name, paths_config.dataset_subset)
         print(f"データセットロード完了:")
         for split, ds in dataset.items():
             print(f"  - {split}: {len(ds)}件")
-        
-        # サンプル数を制限
-        modified = False
-        
-        if train_samples is not None and len(dataset['train']) > train_samples:
-            dataset['train'] = dataset['train'].select(range(train_samples))
-            modified = True
-            
-        if valid_samples is not None and 'validation' in dataset and len(dataset['validation']) > valid_samples:
-            dataset['validation'] = dataset['validation'].select(range(valid_samples))
-            modified = True
-            
-        if modified:
-            print(f"サンプル数を指定値に調整しました:")
-            for split, ds in dataset.items():
-                print(f"  - {split}: {len(ds)}件")
         
         return dataset
     
@@ -228,8 +201,8 @@ def main():
     # パス設定とトークナイザー初期化
     paths_config, tokenizer = setup_paths_and_tokenizer(args.language)
     
-    # データセットのダウンロードと準備
-    dataset = download_and_prepare_dataset(paths_config, args)
+    # データセットのダウンロードと準備（サイズ調整なし）
+    dataset = download_and_prepare_dataset(paths_config)
     
     # 最大シーケンス長の設定 (統計情報収集のみ使用)
     max_length = args.max_length
@@ -239,7 +212,7 @@ def main():
     else:
         print(f"注意: 指定されたmax_length={max_length}は統計情報のみに使用され、切り詰めは行いません")
     
-    # トークン化 (CPUベースの並列処理を使用)
+    # トークン化 (サイズ調整なし)
     tokenized_dataset = tokenize_dataset(
         dataset, 
         tokenizer,
@@ -264,22 +237,18 @@ def main():
         save_dir = args.save_dir
     else:
         # デフォルトの保存先（オリジナル長を明示）
-        save_dir = os.path.join(paths_config.data_dir, "processed_raw_full")
+        save_dir = os.path.join(paths_config.data_dir, "processed_raw")
     
     # 処理済みデータセット保存
     save_processed_dataset(tokenized_dataset, save_dir)
     
     # 次のステップの指示
     print("\n=== 前処理完了 ===")
-    print(f"トークン長の全体統計:")
-    print(f"  - 最小: {min(lengths)} トークン")
-    print(f"  - 最大: {max(lengths)} トークン")
-    print(f"  - 平均: {sum(lengths)/len(lengths):.1f} トークン")
-    print(f"  - 95パーセンタイル: {sorted(lengths)[int(len(lengths) * 0.95)]} トークン")
-    print(f"\n次のステップ: 以下のコマンドで様々なシーケンス長でトレーニングを実行できます:")
-    print(f"python training.py --data_dir {save_dir} --sequence_length 128")
-    print(f"python training.py --data_dir {save_dir} --sequence_length 256")
-    print(f"python training.py --data_dir {save_dir} --sequence_length 512")
+    print(f"\n次のステップ: 以下のコマンドで様々なサイズ・シーケンス長でトレーニングを実行できます:")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 128 --train_samples 500")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 256 --train_samples 1000")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 512 --train_samples 5000")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 128 --sample_ratio 0.1")
 
 if __name__ == "__main__":
     main()
