@@ -22,6 +22,7 @@ class ModelConfig:
         norm_scheme: 'pre'または'post'のLayerNorm方式を選択
         activation: 活性化関数の選択
         complex_init_scale: 複素数初期化のスケール
+        use_cut_cross_entropy: Cut Cross Entropyを使用するかどうか
     """
     def __init__(
         self,
@@ -36,6 +37,7 @@ class ModelConfig:
         norm_scheme: str = "post",  # 追加: 'pre'または'post'のLayerNorm方式を選択
         activation: str = "gelu",   # 追加: 活性化関数の選択
         complex_init_scale: float = 0.02,  # 追加: 複素数初期化のスケール
+        use_cut_cross_entropy: bool = True,  # Cut Cross Entropyを使用するかどうか
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -49,6 +51,7 @@ class ModelConfig:
         # self.norm_scheme = norm_scheme  # 追加: Pre-LN vs Post-LN
         self.activation = activation  # 追加: 活性化関数
         self.complex_init_scale = complex_init_scale  # 追加: 複素数初期化スケール
+        self.use_cut_cross_entropy = use_cut_cross_entropy  # インスタンス変数として設定
     
     @property
     def vocab_size(self) -> int:
