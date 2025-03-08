@@ -28,6 +28,12 @@ def parse_arguments():
                        help='使用する言語（en: 英語, ja: 日本語）')
     parser.add_argument('--max_samples', type=int, default=500,
                        help='使用するサンプル数の上限')
+    parser.add_argument('--train_samples', type=int, default=None,
+                       help='学習データセットのサンプル数（指定しない場合はmax_samplesを使用）')
+    parser.add_argument('--valid_samples', type=int, default=None,
+                       help='検証データセットのサンプル数（指定しない場合はtrain_samplesの1/10）')
+    parser.add_argument('--sequence_length', type=int, default=128,
+                       help='使用するシーケンス長 (入力トークン数)')
     parser.add_argument('--epochs', type=int, default=2,
                        help='トレーニングエポック数')
     parser.add_argument('--batch_size', type=int, default=8,
@@ -36,15 +42,18 @@ def parse_arguments():
                        help='隠れ層のサイズ')
     parser.add_argument('--learning_rate', type=float, default=1e-3,
                        help='学習率')
+    parser.add_argument('--random_seed', type=int, default=42,
+                       help='乱数シード値')
     return parser.parse_args()
 
 def setup_environment(args):
     """環境設定とディレクトリ作成を行います"""
     # シード設定
-    seed = 42
+    seed = args.random_seed
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
     
     # デバイス設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,19 +76,34 @@ def setup_environment(args):
 
 def load_dataset_from_disk_or_download(paths_config, args):
     """ディスクから前処理済みデータセットを読み込むか、新規ダウンロードします"""
+    # サンプル数の計算
+    train_samples = args.train_samples if args.train_samples is not None else args.max_samples
+    valid_samples = args.valid_samples if args.valid_samples is not None else max(1, train_samples // 10)
+    
     if args.data_dir and os.path.exists(args.data_dir):
         print(f"前処理済みデータセットを読み込み中: {args.data_dir}")
         try:
             train_dataset = load_from_disk(os.path.join(args.data_dir, "train"))
             valid_dataset = load_from_disk(os.path.join(args.data_dir, "validation"))
             
-            print(f"データセットを読み込みました - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
+            print(f"データセット全体のサイズ - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
             
-            # サイズ制限（必要な場合）
-            if args.max_samples and args.max_samples < len(train_dataset):
-                train_dataset = train_dataset.select(range(args.max_samples))
-                valid_dataset = valid_dataset.select(range(min(args.max_samples//10, len(valid_dataset))))
-                print(f"データセットを制限しました - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
+            # サイズ制限（指定サンプル数に調整）
+            if train_samples < len(train_dataset):
+                # ランダムサンプリングを行う場合
+                # indices = np.random.choice(len(train_dataset), train_samples, replace=False)
+                # train_dataset = train_dataset.select(indices)
+                
+                # または先頭から指定数を選択
+                train_dataset = train_dataset.select(range(train_samples))
+                
+            if valid_samples < len(valid_dataset):
+                # valid_indices = np.random.choice(len(valid_dataset), valid_samples, replace=False)
+                # valid_dataset = valid_dataset.select(valid_indices)
+                
+                valid_dataset = valid_dataset.select(range(valid_samples))
+                
+            print(f"データセットを調整しました - 学習: {len(train_dataset)}件, 検証: {len(valid_dataset)}件")
                 
             return {"train": train_dataset, "validation": valid_dataset}
         except Exception as e:
@@ -87,40 +111,51 @@ def load_dataset_from_disk_or_download(paths_config, args):
             print("新規ダウンロードを試みます...")
     
     # 新規ダウンロード
-    return load_english_dataset(paths_config, args.max_samples)
+    return load_english_dataset(paths_config, train_samples, valid_samples)
 
-def load_english_dataset(paths_config, max_samples=1000):
+def load_english_dataset(paths_config, train_samples=1000, valid_samples=None):
     """小規模な英語データセットをロードします"""
+    if valid_samples is None:
+        valid_samples = max(1, train_samples // 10)
+        
     print(f"データセットをダウンロード中: {paths_config.dataset_name}/{paths_config.dataset_subset}")
     
     # WikiText-2データセットをロード
     try:
         dataset = load_dataset(paths_config.dataset_name, paths_config.dataset_subset)
-        print(f"データセットをロードしました: {len(dataset['train'])}件（学習）")
+        print(f"データセットをロードしました: {len(dataset['train'])}件（学習全体）")
         
-        # データセットサイズを制限（小規模実験用）
-        if max_samples and max_samples < len(dataset['train']):
-            dataset['train'] = dataset['train'].select(range(max_samples))
-            dataset['validation'] = dataset['validation'].select(range(min(max_samples//10, len(dataset['validation']))))
-            print(f"データセットを制限しました - 学習: {len(dataset['train'])}件, 検証: {len(dataset['validation'])}件")
+        # データセットサイズを指定サイズに調整
+        if train_samples and train_samples < len(dataset['train']):
+            dataset['train'] = dataset['train'].select(range(train_samples))
+            
+        if valid_samples and valid_samples < len(dataset['validation']):
+            dataset['validation'] = dataset['validation'].select(range(valid_samples))
+            
+        print(f"データセットを調整しました - 学習: {len(dataset['train'])}件, 検証: {len(dataset['validation'])}件")
             
         return dataset
     except Exception as e:
         print(f"データセットのダウンロードエラー: {e}")
         raise
 
-def setup_tokenizer_and_model(paths_config):
+def setup_tokenizer_and_model(paths_config, args):
     """トークナイザーとモデルをセットアップします"""
     # トークナイザーの読み込み
     print(f"Loading tokenizer: {paths_config.tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
     
+    # GPT-2トークナイザーの場合、パディングトークンが設定されていないため追加
+    if paths_config.tokenizer_name == "gpt2" and tokenizer.pad_token is None:
+        print("GPT-2トークナイザーにパディングトークンを設定します")
+        tokenizer.pad_token = tokenizer.eos_token
+    
     # モデル設定
     model_config = ModelConfig(
-        hidden_size=256,  # 小さいサイズにして実験を早く
-        num_layers=2,     # レイヤー数も少なく
+        hidden_size=args.hidden_size,
+        num_layers=1,     # レイヤー数も少なく
         vocab_size=None,  # トークナイザーから自動取得
-        max_seq_len=128,  # シーケンス長も短く設定
+        max_seq_len=args.sequence_length,
         dropout_prob=0.1,
         use_rope=True,
         use_wavelet=False  # 波変換は今回無効に
@@ -130,39 +165,57 @@ def setup_tokenizer_and_model(paths_config):
     # モデル初期化
     model = WaveNetworkLM(model_config)
     print(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
+    print(f"シーケンス長: {args.sequence_length}, 隠れ層サイズ: {args.hidden_size}")
     
     return tokenizer, model, model_config
 
 def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=8):
     """学習用データを準備します"""
-    # テキストデータの前処理
-    def tokenize_function(examples):
-        return tokenizer(examples["text"], truncation=True, max_length=model_config.max_seq_len)
+    # 入力がすでに辞書型かどうかをチェック
+    if isinstance(dataset, dict):
+        # すでに前処理されているデータセット（辞書型）を使用
+        print("前処理済みデータセットを使用します")
+        train_dataset = dataset['train']
+        valid_dataset = dataset['validation']
+        
+        # シーケンス長の調整はせず、コレーターに任せる
+        print(f"コレーター内でシーケンス長 {model_config.max_seq_len} に動的調整します")
+        
+    else:
+        # テキストデータの前処理が必要
+        print("データセットをトークン化しています...")
+        def tokenize_function(examples):
+            return tokenizer(
+                examples["text"], 
+                truncation=True,
+                max_length=None,  # パディングせず、完全なシーケンスを保存
+                padding=False      # パディングなし
+            )
+        
+        tokenized_dataset = dataset.map(
+            tokenize_function, 
+            batched=True, 
+            remove_columns=["text"]
+        )
+        
+        train_dataset = tokenized_dataset["train"]
+        valid_dataset = tokenized_dataset["validation"]
     
-    tokenized_dataset = dataset.map(
-        tokenize_function, 
-        batched=True, 
-        remove_columns=["text"]
-    )
-    
-    # データセット形式の調整
-    train_dataset = tokenized_dataset["train"]
-    valid_dataset = tokenized_dataset["validation"]
-    
-    # データコレーターの作成
+    # データコレーターの作成（ここでシーケンス長が適用される）
     collator = CustomCollator(
         tokenizer=tokenizer,
-        model_config=model_config,
+        model_config=model_config,  # max_seq_lenを含む
         mlm=True,
         mlm_probability=0.15,
-        mask_token_id=tokenizer.mask_token_id if hasattr(tokenizer, 'mask_token_id') else None
+        mask_token_id=tokenizer.mask_token_id if hasattr(tokenizer, 'mask_token_id') else None,
+        dynamic_padding=True  # 動的パディングを有効化
     )
     
     # データローダーの作成
     train_loader = DataLoader(
         train_dataset, 
         batch_size=batch_size, 
-        collate_fn=collator,
+        collate_fn=collator,  # カスタムコレーターが指定シーケンス長でパディング
         shuffle=True
     )
     
@@ -385,8 +438,8 @@ def main():
         # データセットのロード（前処理済みorダウンロード）
         dataset = load_dataset_from_disk_or_download(paths_config, args)
         
-        # トークナイザーとモデルのセットアップ
-        tokenizer, model, model_config = setup_tokenizer_and_model(paths_config)
+        # トークナイザーとモデルのセットアップ（シーケンス長指定）
+        tokenizer, model, model_config = setup_tokenizer_and_model(paths_config, args)
         model.to(device)
         
         # データ準備

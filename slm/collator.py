@@ -18,13 +18,15 @@ class CustomCollator:
         mlm: bool = False,
         mlm_probability: float = 0.15,
         mask_token_id: Optional[int] = None,
-        qa: bool = False
+        qa: bool = False,
+        dynamic_padding: bool = True
     ):
         self.tokenizer = tokenizer
         self.model_config = model_config
         self.mlm = mlm
         self.mlm_probability = mlm_probability
         self.qa = qa
+        self.dynamic_padding = dynamic_padding
 
         if mask_token_id is not None:
             self.mask_token_id = mask_token_id
@@ -39,44 +41,31 @@ class CustomCollator:
                 else:
                     self.mask_token_id = tmp_id
 
-    def __call__(self, batch):
-        """
-        How:
-            - batch(list[dict]) から input_ids / labels を取り出し、
-              ModelConfig.max_seq_len でトリミング or パディング。
-            - mlm=True の場合は確率的にマスクトークンに置換し、labelsを-100で埋める。
-        """
-        # Why not: バッチ内で統一的に max_seq_len を取得して使う
+    def __call__(self, examples):
+        # バッチ内の入力を収集
+        input_ids = [e["input_ids"] for e in examples]
+        attention_mask = [e["attention_mask"] if "attention_mask" in e else [1] * len(e["input_ids"]) for e in examples]
+        
+        # シーケンス長を制限（model_configのmax_seq_lenまで）
         max_len = self.model_config.max_seq_len
+        input_ids = [ids[:max_len] for ids in input_ids]
+        attention_mask = [mask[:max_len] for mask in attention_mask]
         
-        input_ids_list = []
+        # パディング処理
+        padded_input_ids = []
+        padded_attention_mask = []
+        for ids, mask in zip(input_ids, attention_mask):
+            padding_length = max_len - len(ids)
+            if padding_length > 0:
+                padded_input_ids.append(ids + [self.tokenizer.pad_token_id] * padding_length)
+                padded_attention_mask.append(mask + [0] * padding_length)
+            else:
+                padded_input_ids.append(ids)
+                padded_attention_mask.append(mask)
         
-        for sample in batch:
-            # 取り出し
-            input_ids = sample["input_ids"]
-            # QAなどがある場合は別の処理かもしれないが、とりあえず同様にラベル扱い
-            
-            # 1) トリミング
-            if len(input_ids) > max_len:
-                input_ids = input_ids[:max_len]
-
-            input_ids_list.append(input_ids)
-        
-        # 2) パディング
-        #   バッチ内の max_len は model_config.max_seq_len と固定
-        for i in range(len(input_ids_list)):
-            diff = max_len - len(input_ids_list[i])
-            if diff > 0:
-                # 短い場合はパディング
-                input_ids_list[i] += [self.tokenizer.pad_token_id] * diff
-
-        # list -> tensor
-        input_ids_batch = torch.tensor(input_ids_list, dtype=torch.long)
-        labels_batch = input_ids_batch.clone()
-
-        # 3) MLMマスク処理（mlm=True のときだけ）
+        # MLMタスク用のマスクを適用（必要に応じて）
         if self.mlm:
-            probability_matrix = torch.full(labels_batch.shape, self.mlm_probability)
+            probability_matrix = torch.full((len(padded_input_ids), max_len), self.mlm_probability)
             special_ids = set([
                 self.tokenizer.cls_token_id,
                 self.tokenizer.sep_token_id,
@@ -85,12 +74,19 @@ class CustomCollator:
             ])
             mask_arr = torch.bernoulli(probability_matrix).bool()
             for s_id in special_ids:
-                mask_arr &= (input_ids_batch != s_id)
+                mask_arr &= (torch.tensor(padded_input_ids) != s_id)
             
+            input_ids_batch = torch.tensor(padded_input_ids)
+            labels_batch = input_ids_batch.clone()
             input_ids_batch[mask_arr] = self.mask_token_id
             labels_batch[~mask_arr] = -100
+        else:
+            input_ids_batch = torch.tensor(padded_input_ids)
+            labels_batch = input_ids_batch.clone()
 
+        # テンソルに変換して返す
         return {
             "input_ids": input_ids_batch,
+            "attention_mask": torch.tensor(padded_attention_mask),
             "labels": labels_batch
         }

@@ -22,8 +22,10 @@ def parse_arguments():
                        help='処理する言語（en: 英語, ja: 日本語）')
     parser.add_argument('--max_samples', type=int, default=None,
                        help='処理するサンプル数の上限（デフォルト: すべて）')
-    parser.add_argument('--max_length', type=int, default=128,
-                       help='トークン化する最大シーケンス長')
+    parser.add_argument('--train_samples', type=int, default=None,
+                       help='学習データセットのサンプル数（指定しない場合はmax_samplesを使用）')
+    parser.add_argument('--valid_samples', type=int, default=None,
+                       help='検証データセットのサンプル数（指定しない場合はtrain_samplesの1/10）')
     parser.add_argument('--chunk_size', type=int, default=1000,
                        help='一度に処理するチャンクサイズ')
     parser.add_argument('--save_dir', type=str, default=None,
@@ -54,9 +56,14 @@ def setup_paths_and_tokenizer(language='en'):
     
     return paths_config, tokenizer
 
-def download_and_prepare_dataset(paths_config, max_samples=None):
+def download_and_prepare_dataset(paths_config, args):
     """データセットをダウンロードして基本的な前処理を行います"""
     print(f"データセットをダウンロード中: {paths_config.dataset_name}/{paths_config.dataset_subset}")
+    
+    # サンプル数の計算
+    max_samples = args.max_samples
+    train_samples = args.train_samples if args.train_samples is not None else max_samples
+    valid_samples = args.valid_samples if args.valid_samples is not None else (None if train_samples is None else max(1, train_samples // 10))
     
     try:
         dataset = load_dataset(paths_config.dataset_name, paths_config.dataset_subset)
@@ -65,17 +72,18 @@ def download_and_prepare_dataset(paths_config, max_samples=None):
             print(f"  - {split}: {len(ds)}件")
         
         # サンプル数を制限
-        if max_samples:
-            for split in dataset:
-                if len(dataset[split]) > max_samples:
-                    if split == 'train':
-                        dataset[split] = dataset[split].select(range(max_samples))
-                    else:
-                        # 検証・テストセットはトレーニングセットの1/10のサイズに
-                        subset_size = max(1, max_samples // 10)
-                        dataset[split] = dataset[split].select(range(min(subset_size, len(dataset[split]))))
+        modified = False
+        
+        if train_samples is not None and len(dataset['train']) > train_samples:
+            dataset['train'] = dataset['train'].select(range(train_samples))
+            modified = True
             
-            print(f"サンプル数を制限しました:")
+        if valid_samples is not None and 'validation' in dataset and len(dataset['validation']) > valid_samples:
+            dataset['validation'] = dataset['validation'].select(range(valid_samples))
+            modified = True
+            
+        if modified:
+            print(f"サンプル数を指定値に調整しました:")
             for split, ds in dataset.items():
                 print(f"  - {split}: {len(ds)}件")
         
@@ -85,7 +93,42 @@ def download_and_prepare_dataset(paths_config, max_samples=None):
         print(f"データセットのダウンロード中にエラーが発生しました: {e}")
         raise
 
-def tokenize_dataset(dataset, tokenizer, max_length=128, batch_size=64, chunk_size=1000, num_workers=4):
+def calculate_optimal_sequence_length(dataset, tokenizer, sample_size=1000):
+    """データセットの適切な最大シーケンス長を計算します"""
+    print("データセットの最適なシーケンス長を計算しています...")
+    
+    # サンプリング対象の件数を制限
+    sample_size = min(sample_size, len(dataset['train']))
+    
+    # ランダムサンプリング
+    import numpy as np
+    indices = np.random.choice(len(dataset['train']), sample_size, replace=False)
+    samples = [dataset['train'][int(i)]['text'] for i in indices]
+    
+    # 各サンプルのトークン長を計算
+    lengths = []
+    for text in tqdm(samples, desc="シーケンス長計算"):
+        tokens = tokenizer.encode(text)
+        lengths.append(len(tokens))
+    
+    # 統計情報を計算
+    avg_length = sum(lengths) / len(lengths)
+    max_length = max(lengths)
+    p95_length = sorted(lengths)[int(len(lengths) * 0.95)]  # 95パーセンタイル
+    
+    print(f"シーケンス長の統計:")
+    print(f"  - 平均: {avg_length:.1f} トークン")
+    print(f"  - 最大: {max_length} トークン")
+    print(f"  - 95パーセンタイル: {p95_length} トークン")
+    
+    # 最大長を返す（必要に応じて95パーセンタイルを使用）
+    # 極端に長いテキストがある場合は 95 パーセンタイルの方が適切
+    suggested_length = p95_length
+    
+    print(f"推奨シーケンス長: {suggested_length}")
+    return suggested_length
+
+def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_workers=4):
     """データセットをトークン化します"""
     def tokenize_function(examples):
         # トークナイザーがパディングトークンを持っているか確認
@@ -94,16 +137,15 @@ def tokenize_dataset(dataset, tokenizer, max_length=128, batch_size=64, chunk_si
             
         outputs = tokenizer(
             examples["text"],
-            truncation=True,
-            max_length=max_length,
-            padding="max_length",
+            truncation=False,  # 切り詰めを行わない
+            padding=False,     # パディングも行わない（Collatorに任せる）
             return_tensors=None
         )
         return outputs
     
     print("データセットをトークン化しています...")
-    print(f"注意: トークン化はCPU処理に最適化されたタスクです。GPUは使用しません。")
-    print(f"      並列ワーカー数: {num_workers}")
+    print("注意: 切り詰めやパディングは行わず、元のテキスト長を維持します。トレーニング時にCollatorが処理します。")
+    print(f"並列ワーカー数: {num_workers}")
     
     # 大きなデータセットを効率的に処理するためにチャンク化
     tokenized_dataset = {}
@@ -187,31 +229,57 @@ def main():
     paths_config, tokenizer = setup_paths_and_tokenizer(args.language)
     
     # データセットのダウンロードと準備
-    dataset = download_and_prepare_dataset(paths_config, args.max_samples)
+    dataset = download_and_prepare_dataset(paths_config, args)
+    
+    # 最大シーケンス長の設定 (統計情報収集のみ使用)
+    max_length = args.max_length
+    if args.auto_max_length:
+        max_length = calculate_optimal_sequence_length(dataset, tokenizer)
+        print(f"自動計算したシーケンス長: {max_length} (統計情報のみ、切り詰めは行いません)")
+    else:
+        print(f"注意: 指定されたmax_length={max_length}は統計情報のみに使用され、切り詰めは行いません")
     
     # トークン化 (CPUベースの並列処理を使用)
     tokenized_dataset = tokenize_dataset(
         dataset, 
-        tokenizer, 
-        max_length=args.max_length,
+        tokenizer,
+        batch_size=64,
         chunk_size=args.chunk_size,
         num_workers=args.num_workers
     )
+    
+    # シーケンス長の統計情報を収集
+    lengths = []
+    for split, ds in tokenized_dataset.items():
+        split_lengths = [len(example['input_ids']) for example in ds]
+        print(f"{split}データの長さ統計:")
+        print(f"  - 最小: {min(split_lengths)} トークン")
+        print(f"  - 最大: {max(split_lengths)} トークン")
+        print(f"  - 平均: {sum(split_lengths)/len(split_lengths):.1f} トークン")
+        print(f"  - 95パーセンタイル: {sorted(split_lengths)[int(len(split_lengths) * 0.95)]} トークン")
+        lengths.extend(split_lengths)
     
     # 保存先設定
     if args.save_dir:
         save_dir = args.save_dir
     else:
-        # デフォルトの保存先
-        save_dir = os.path.join(paths_config.data_dir, "processed")
+        # デフォルトの保存先（オリジナル長を明示）
+        save_dir = os.path.join(paths_config.data_dir, "processed_raw_full")
     
     # 処理済みデータセット保存
     save_processed_dataset(tokenized_dataset, save_dir)
     
     # 次のステップの指示
     print("\n=== 前処理完了 ===")
-    print(f"次のステップ: 以下のコマンドでトレーニングを実行できます")
-    print(f"python training.py --data_dir {save_dir}")
+    print(f"トークン長の全体統計:")
+    print(f"  - 最小: {min(lengths)} トークン")
+    print(f"  - 最大: {max(lengths)} トークン")
+    print(f"  - 平均: {sum(lengths)/len(lengths):.1f} トークン")
+    print(f"  - 95パーセンタイル: {sorted(lengths)[int(len(lengths) * 0.95)]} トークン")
+    print(f"\n次のステップ: 以下のコマンドで様々なシーケンス長でトレーニングを実行できます:")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 128")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 256")
+    print(f"python training.py --data_dir {save_dir} --sequence_length 512")
 
 if __name__ == "__main__":
     main()
