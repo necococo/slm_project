@@ -27,6 +27,7 @@ class CustomCollator:
         self.mlm_probability = mlm_probability
         self.qa = qa
         self.dynamic_padding = dynamic_padding
+        self.warning_shown = False
 
         if mask_token_id is not None:
             self.mask_token_id = mask_token_id
@@ -40,6 +41,20 @@ class CustomCollator:
                     self.mask_token_id = tokenizer.unk_token_id
                 else:
                     self.mask_token_id = tmp_id
+
+    def mask_tokens(self, inputs, mask_token_id=None):
+        """
+        入力トークンの一部をマスクするメソッド
+        mask_token_idが明示的に提供されない場合、代替手段としてunk_token_idを使用
+        """
+        if mask_token_id is None:
+            # tokenizer.mask_token_idがない場合、unk_token_idを使用
+            mask_token_id = self.tokenizer.unk_token_id
+            if not self.warning_shown:
+                print(f"マスクトークンIDがないため、代わりにunk_token_id ({mask_token_id}) を使用します")
+                self.warning_shown = True
+        
+        # ...masking logic...
 
     def __call__(self, examples):
         # バッチ内の入力を収集

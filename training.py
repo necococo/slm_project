@@ -56,6 +56,8 @@ def parse_arguments():
                        help='学習率ウォームアップのステップ数')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                        help='Weight decayの強さ')
+    parser.add_argument('--num_layers', type=int, default=1,
+                       help='wave networkのlayer数')
     return parser.parse_args()
 
 def setup_environment(args):
@@ -237,7 +239,7 @@ def setup_tokenizer_and_model(paths_config, args):
     # モデル設定
     model_config = ModelConfig(
         hidden_size=args.hidden_size,
-        num_layers=1,     # レイヤー数も少なく
+        num_layers=args.num_layers,     # レイヤー数も少なく
         vocab_size=None,  # トークナイザーから自動取得
         max_seq_len=args.sequence_length,
         dropout_prob=0.1,
