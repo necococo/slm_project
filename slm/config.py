@@ -143,18 +143,19 @@ class PathsConfig:
     def __init__(
         self,
         base_dir: str = "/content/drive/MyDrive/slm",
-        dataset_name: str = "singletongue/wikipedia-utils",
-        dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
-        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking", # 修正: 正しいリポジトリ名
-        tokenizer_file: str = "tokenizer_model.json", # 追加: 実際のファイル名を指定
+        dataset_name = None,
+        dataset_subset = None,
+        tokenizer_name = None, # 修正: 正しいリポジトリ名
+        tokenizer_file = None, # 追加: 実際のファイル名を指定
         language: str = "ja"  # 追加: 言語選択（'ja'または'en'）
     ) -> None:
         self.base_dir = base_dir
-        self.data_dir = os.path.join(self.base_dir, "data")
         self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
         self.log_dir = os.path.join(self.base_dir, "logs")
         self.visualization_dir = os.path.join(self.log_dir, "visualizations")  # 追加: 可視化結果保存ディレクトリ
         self.language = language
+        self.data_dir = os.path.join(self.base_dir, "data", self.language, self.dataset_name, self.dataset_subset)
+
         
         # 言語に基づいてデータセットとトークナイザーを設定
         if language == "en":
@@ -165,22 +166,20 @@ class PathsConfig:
             self.tokenizer_file = "gpt2_tokenizer.json"
         else:
             # 日本語用（既存の設定を維持）
-            self.dataset_name = dataset_name
-            self.dataset_subset = dataset_subset
-            self.tokenizer_name = tokenizer_name
-            self.tokenizer_file = tokenizer_file
+            self.dataset_name = "singletongue/wikipedia-utils"
+            self.dataset_subset = "corpus-jawiki-20230403-filtered-large"
+            self.tokenizer_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
+            self.tokenizer_file = "tokenizer_model.json"
     
     @property
     def dataset_dir(self) -> str:
         """データセットの保存ディレクトリパスを返します"""
-        if self.dataset_subset:
-            return os.path.join(self.data_dir, self.dataset_name, self.dataset_subset)
-        return os.path.join(self.data_dir, self.dataset_name)
+        return self.data_dir
         
     @property
     def tokenizer_path(self) -> str:
         """トークナイザーモデルのパスを返します"""
-        return os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_file)
+        return os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_name, self.tokenizer_file)
         
     @property
     def model_save_dir(self) -> str:

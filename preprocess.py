@@ -59,6 +59,13 @@ def download_and_prepare_dataset(paths_config):
         print(f"データセットロード完了:")
         for split, ds in dataset.items():
             print(f"  - {split}: {len(ds)}件")
+            # サンプルの表示を追加
+            if len(ds) > 0:
+                sample = ds[0]
+                print(f"    サンプルデータ: {list(sample.keys())}")
+                if 'text' in sample:
+                    text_sample = sample['text']
+                    print(f"    テキストサンプル: {text_sample[:100]}..." if text_sample else "    テキスト: 空")
         
         return dataset
     
@@ -108,11 +115,24 @@ def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_wor
     sample_example = dataset['train'][0]
     print(f"サンプルデータの構造: {list(sample_example.keys())}")
     if "text" in sample_example:
-        print(f"テキストサンプル: {sample_example['text'][:100]}...")
+        text_sample = sample_example['text']
+        print(f"テキストサンプル: {text_sample[:100]}..." if text_sample else "テキスト: 空")
+        
+        # テキストが空でないか確認
+        if not text_sample or len(text_sample.strip()) == 0:
+            print("警告: サンプルテキストが空です。データセットを確認してください。")
     else:
         print("警告: データセットに 'text' フィールドがありません！")
         print(f"利用可能なフィールド: {list(sample_example.keys())}")
         raise ValueError("データセットの形式が予期したものと異なります")
+    
+    # 直接テキスト処理をテスト
+    print("\n単一サンプルのトークン化テスト:")
+    test_sample = dataset['train'][0]['text']
+    print(f"テストテキスト: '{test_sample[:50]}...'")
+    test_tokens = tokenizer.encode(test_sample, add_special_tokens=True)
+    print(f"トークンID: {test_tokens[:10]}... (長さ: {len(test_tokens)})")
+    print(f"デコード結果: '{tokenizer.decode(test_tokens[:10])}...'")
     
     def tokenize_function(examples):
         # トークナイザーがパディングトークンを持っているか確認
@@ -120,29 +140,54 @@ def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_wor
             raise ValueError("トークナイザーにパディングトークンが設定されていません")
         
         # 入力データをチェック
-        if "text" not in examples or not examples["text"]:
-            print(f"警告: 空のテキストまたはテキストフィールドなし: {examples.keys()}")
-            # ダミーのデータを返す代わりに、エラーを上げる
-            raise ValueError("トークン化に失敗: テキストデータがありません")
-            
+        if "text" not in examples:
+            raise ValueError(f"トークン化に失敗: テキストフィールドがありません。利用可能: {list(examples.keys())}")
+        
+        # 空のテキストをフィルタリング
+        valid_texts = [t for t in examples["text"] if t and len(t.strip()) > 0]
+        if len(valid_texts) == 0:
+            raise ValueError("トークン化に失敗: 有効なテキストがありません")
+        
+        # フィルタリング後のテキスト数を表示
+        if len(valid_texts) < len(examples["text"]):
+            print(f"警告: {len(examples['text']) - len(valid_texts)}件の空テキストをスキップしました")
+        
         try:
-            # トークン化の実行
-            outputs = tokenizer(
-                examples["text"],
-                truncation=False,  # 切り詰めを行わない
-                padding=False,     # パディングも行わない（Collatorに任せる）
-                return_tensors=None,
-                return_attention_mask=True
-            )
+            # トークン化の実行 - 低レベルAPIを使用
+            all_input_ids = []
+            all_attention_masks = []
             
-            # 結果の検証（最初の例だけ）
-            if len(outputs["input_ids"]) > 0 and len(outputs["input_ids"][0]) == 0:
-                print(f"警告: 最初の例のトークン化結果が空です。入力テキスト: {examples['text'][0][:50]}...")
+            for text in valid_texts:
+                # 1つずつ確実にトークン化
+                tokens = tokenizer.encode(
+                    text, 
+                    add_special_tokens=True,
+                    truncation=False,
+                )
+                # 有効なトークンが生成されたか確認
+                if not tokens or len(tokens) == 0:
+                    print(f"警告: テキスト '{text[:50]}...' のトークン化結果が空です")
+                    continue
+                
+                # 注意マスクを作成（すべて1）
+                attention_mask = [1] * len(tokens)
+                
+                all_input_ids.append(tokens)
+                all_attention_masks.append(attention_mask)
             
-            return outputs
+            # 結果の検証
+            if len(all_input_ids) == 0:
+                raise ValueError("すべてのテキストのトークン化に失敗しました")
+            
+            return {
+                "input_ids": all_input_ids,
+                "attention_mask": all_attention_masks
+            }
         except Exception as e:
             print(f"トークン化中にエラーが発生しました: {e}")
-            # 例外を上げて処理を停止
+            # デバッグ情報
+            if len(valid_texts) > 0:
+                print(f"問題のあるテキスト例: '{valid_texts[0][:50]}...'")
             raise
     
     print("データセットをトークン化しています...")
