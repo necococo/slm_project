@@ -103,22 +103,59 @@ def calculate_optimal_sequence_length(dataset, tokenizer, sample_size=1000):
 
 def tokenize_dataset(dataset, tokenizer, batch_size=64, chunk_size=1000, num_workers=8):
     """データセットをトークン化します"""
+    # データセット構造を確認
+    print("\nデータセット構造の確認:")
+    sample_example = dataset['train'][0]
+    print(f"サンプルデータの構造: {list(sample_example.keys())}")
+    if "text" in sample_example:
+        print(f"テキストサンプル: {sample_example['text'][:100]}...")
+    else:
+        print("警告: データセットに 'text' フィールドがありません！")
+        print(f"利用可能なフィールド: {list(sample_example.keys())}")
+        raise ValueError("データセットの形式が予期したものと異なります")
+    
     def tokenize_function(examples):
         # トークナイザーがパディングトークンを持っているか確認
         if tokenizer.pad_token is None:
             raise ValueError("トークナイザーにパディングトークンが設定されていません")
+        
+        # 入力データをチェック
+        if "text" not in examples or not examples["text"]:
+            print(f"警告: 空のテキストまたはテキストフィールドなし: {examples.keys()}")
+            # ダミーのデータを返す代わりに、エラーを上げる
+            raise ValueError("トークン化に失敗: テキストデータがありません")
             
-        outputs = tokenizer(
-            examples["text"],
-            truncation=False,  # 切り詰めを行わない
-            padding=False,     # パディングも行わない（Collatorに任せる）
-            return_tensors=None
-        )
-        return outputs
+        try:
+            # トークン化の実行
+            outputs = tokenizer(
+                examples["text"],
+                truncation=False,  # 切り詰めを行わない
+                padding=False,     # パディングも行わない（Collatorに任せる）
+                return_tensors=None,
+                return_attention_mask=True
+            )
+            
+            # 結果の検証（最初の例だけ）
+            if len(outputs["input_ids"]) > 0 and len(outputs["input_ids"][0]) == 0:
+                print(f"警告: 最初の例のトークン化結果が空です。入力テキスト: {examples['text'][0][:50]}...")
+            
+            return outputs
+        except Exception as e:
+            print(f"トークン化中にエラーが発生しました: {e}")
+            # 例外を上げて処理を停止
+            raise
     
     print("データセットをトークン化しています...")
     print("注意: 切り詰めやパディングは行わず、元のテキスト長を維持します。トレーニング時にCollatorが処理します。")
     print(f"並列ワーカー数: {num_workers}")
+    
+    # トークナイザーのテスト
+    test_text = "This is a test sentence."
+    test_tokens = tokenizer(test_text)
+    print(f"\nトークナイザーテスト:")
+    print(f"入力: '{test_text}'")
+    print(f"出力: {test_tokens}")
+    print(f"デコード: '{tokenizer.decode(test_tokens['input_ids'])}'")
     
     tokenized_dataset = {}
     
