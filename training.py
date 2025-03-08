@@ -48,6 +48,10 @@ def parse_arguments():
                        help='学習率')
     parser.add_argument('--random_seed', type=int, default=42,
                        help='乱数シード値')
+    parser.add_argument('--use_cut_cross_entropy', action='store_true', default=True,
+                       help='Cut Cross Entropyを使用する（デフォルト: True）')
+    parser.add_argument('--no_cut_cross_entropy', action='store_false', dest='use_cut_cross_entropy',
+                       help='通常のCross Entropyを使用する')
     return parser.parse_args()
 
 def setup_environment(args):
@@ -234,7 +238,8 @@ def setup_tokenizer_and_model(paths_config, args):
         max_seq_len=args.sequence_length,
         dropout_prob=0.1,
         use_rope=True,
-        use_wavelet=False  # 波変換は今回無効に
+        use_wavelet=False,  # 波変換は今回無効に
+        use_cut_cross_entropy=getattr(args, 'use_cut_cross_entropy', True)  # 引数から取得、なければTrue
     )
     model_config.set_tokenizer(tokenizer)
     
@@ -242,6 +247,7 @@ def setup_tokenizer_and_model(paths_config, args):
     model = WaveNetworkLM(model_config)
     print(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
     print(f"シーケンス長: {args.sequence_length}, 隠れ層サイズ: {args.hidden_size}")
+    print(f"使用する損失関数: {'Cut Cross Entropy' if model.use_cut_cross_entropy else '通常のCross Entropy'}")
     
     return tokenizer, model, model_config
 
@@ -329,13 +335,13 @@ def train_model(model, train_dataset, valid_dataset, model_config, device, paths
         paths_config=paths_config
     )
     
-    # MLM学習の実行
     print("\nStarting MLM training...")
+    # MLM学習の実行
     trainer.train_mlm()
     
     # モデル保存
-    checkpoint_path = os.path.join(paths_config.checkpoint_dir, "english_model.pt")
     trainer.save_checkpoint("english_model")
+    checkpoint_path = os.path.join(paths_config.checkpoint_dir, "english_model.pt")
     print(f"Model saved to {checkpoint_path}")
     
     return model
@@ -453,8 +459,8 @@ def visualize_embeddings(embeddings, paths_config):
         stats[key] = {
             'mean': np.mean(flat_values),
             'std': np.std(flat_values),
-            'min': np.min(flat_values),
             'max': np.max(flat_values),
+            'min': np.min(flat_values),
             'abs_mean': np.mean(np.abs(flat_values))
         }
     
@@ -503,7 +509,6 @@ def visualize_embeddings(embeddings, paths_config):
     plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
     
     plt.tight_layout()
-    
     complex_save_path = os.path.join(paths_config.visualization_path, "complex_plane.png")
     plt.savefig(complex_save_path)
     print(f"Complex plane visualization saved to {complex_save_path}")
@@ -518,8 +523,8 @@ def main():
     # 環境設定
     device, paths_config = setup_environment(args)
     
+    # データセットのロード（前処理済みorダウンロード）
     try:
-        # データセットのロード（前処理済みorダウンロード）
         dataset = load_dataset_from_disk_or_download(paths_config, args)
         
         # トークナイザーとモデルのセットアップ（シーケンス長指定）
@@ -546,6 +551,7 @@ def main():
             batch_size=args.batch_size,
             mlm_epochs=args.epochs,
             mlm_probability=0.15,
+            weight_decay=0.01,
             warmup_steps=100,
             use_amp=True,
             clip_grad_norm=True,
@@ -564,15 +570,13 @@ def main():
         
         trainer.train_mlm()
         
-        # 埋め込み抽出と可視化
         print("\n埋め込み抽出を行います...")
+        # 埋め込み抽出と可視化
         embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device)
-        
         print("\n埋め込み分布を可視化しています...")
         visualize_embeddings(embeddings, paths_config)
         
         print("\n分析完了!")
-        
     except Exception as e:
         print(f"実行中にエラーが発生しました: {e}")
         import traceback

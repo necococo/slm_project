@@ -5,6 +5,7 @@ import os
 import time
 import torch
 import torch.nn as nn
+import torch.nn.functional as F  # F.cross_entropy用に追加
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
@@ -160,18 +161,31 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        # forward (mixed precision対応)
-        # AMPを使いつつもlinear_cross_entropyのために明示的にfp16に変換
-        embeddings = self.model(input_ids)
-        classifier = self.model.get_classifier_weights()
-        
-        # 必ず半精度に変換（linear_cross_entropy の要件）
-        embeddings = embeddings.half()
-        classifier = classifier.half()
-        
-        # ロス計算
-        loss = linear_cross_entropy(embeddings, classifier, labels)
-        
+        # AMPの使用有無に関わらず、モデルのフラグに基づいて適切な損失計算を行う
+        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+            # Cut Cross Entropy用の処理
+            if self.scaler is not None:
+                with torch.cuda.amp.autocast():
+                    embeddings = self.model(input_ids)  # hidden_statesが返される
+                    classifier = self.model.get_classifier_weights()
+                    # 必ず半精度に変換（linear_cross_entropy の要件）
+                    embeddings = embeddings.half()
+                    classifier = classifier.half()
+                    loss = linear_cross_entropy(embeddings, classifier, labels)
+            else:
+                embeddings = self.model(input_ids)
+                classifier = self.model.get_classifier_weights()
+                loss = linear_cross_entropy(embeddings, classifier, labels)
+        else:
+            # 通常のCross Entropy用の処理
+            if self.scaler is not None:
+                with torch.cuda.amp.autocast():
+                    logits = self.model(input_ids)  # logitsが返される
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+            else:
+                logits = self.model(input_ids)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+
         # 勾配計算
         loss.backward()
         
@@ -250,27 +264,44 @@ class Trainer:
         
         self.optimizer.zero_grad()
         
-        if self.scaler is not None:
-            with torch.cuda.amp.autocast():
+        # use_cut_cross_entropyフラグに基づいて処理を変更
+        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+            # Cut Cross Entropy用の処理
+            if self.scaler is not None:
+                with torch.cuda.amp.autocast():
+                    embeddings = self.model(input_ids)
+                    classifier = self.model.get_classifier_weights()
+                    # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
+                    embeddings = embeddings.half()
+                    classifier = classifier.half()
+                    loss = linear_cross_entropy(embeddings, classifier, labels)
+                
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
                 embeddings = self.model(input_ids)
                 classifier = self.model.get_classifier_weights()
-                # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
                 embeddings = embeddings.half()
                 classifier = classifier.half()
                 loss = linear_cross_entropy(embeddings, classifier, labels)
-            
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+                loss.backward()
+                self.optimizer.step()
         else:
-            embeddings = self.model(input_ids)
-            classifier = self.model.get_classifier_weights()
-            # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
-            embeddings = embeddings.half()
-            classifier = classifier.half()
-            loss = linear_cross_entropy(embeddings, classifier, labels)  # 追加：lossの計算
-            loss.backward()
-            self.optimizer.step()
+            # 通常のCross Entropy用の処理
+            if self.scaler is not None:
+                with torch.cuda.amp.autocast():
+                    logits = self.model(input_ids)
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                logits = self.model(input_ids)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                loss.backward()
+                self.optimizer.step()
         
         if step % 5 == 0:
             self.writer.add_scalar("Diffusion/Loss", loss.item(), step)
@@ -283,7 +314,7 @@ class Trainer:
             return 0.0
         self.model.eval()
         
-        # カスタムコレータの取得（これが欠けていた）
+        # カスタムコレータの取得
         tokenizer = self.model.config.tokenizer
         collator = CustomCollator(
             tokenizer=tokenizer,
@@ -298,7 +329,7 @@ class Trainer:
             self.valid_dataset,
             batch_size=self.training_config.batch_size,
             shuffle=False,
-            collate_fn=collator  # ここにコレータを追加
+            collate_fn=collator
         )
         
         total_loss = 0.0
@@ -307,14 +338,22 @@ class Trainer:
                 input_ids = batch["input_ids"].to(self.device)
                 labels = batch["labels"].to(self.device)
                 
-                embeddings = self.model(input_ids)
-                classifier = self.model.get_classifier_weights()
+                # use_cut_cross_entropyフラグに基づいて処理を変更
+                if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                    # Cut Cross Entropy用の処理
+                    embeddings = self.model(input_ids)
+                    classifier = self.model.get_classifier_weights()
+                    
+                    # 必ず半精度に変換（linear_cross_entropy の要件）
+                    embeddings = embeddings.half()
+                    classifier = classifier.half()
+                    
+                    loss = linear_cross_entropy(embeddings, classifier, labels)
+                else:
+                    # 通常のCross Entropy用の処理
+                    logits = self.model(input_ids)
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
                 
-                # 必ず半精度に変換（linear_cross_entropy の要件）
-                embeddings = embeddings.half()
-                classifier = classifier.half()
-                
-                loss = linear_cross_entropy(embeddings, classifier, labels)
                 total_loss += loss.item()
         
         avg_loss = total_loss / len(dataloader)

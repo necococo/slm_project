@@ -202,6 +202,8 @@ class WaveNetworkLM(nn.Module):
         max_seq_len = config.max_seq_len
         dropout_prob = config.dropout_prob
         use_rope = config.use_rope
+        # cut cross entropyを使用するかどうかのフラグ（デフォルトはTrue）
+        self.use_cut_cross_entropy = getattr(config, 'use_cut_cross_entropy', True)
         
         # トークン埋め込み　nanが多発するので精緻な計算をするためfloat32にしておく
         self.token_embedding = nn.Embedding(vocab_size, hidden_size, dtype=torch.float32)
@@ -240,7 +242,8 @@ class WaveNetworkLM(nn.Module):
             input_ids: 入力トークンID [B, S]
             
         Returns:
-            hidden_states: 最終的な隠れ状態 [B, S, D]
+            use_cut_cross_entropy=Trueの場合: hidden_states [B, S, D]
+            use_cut_cross_entropy=Falseの場合: logits [B, S, V]
         """
         # トークン埋め込み
         hidden_states = self.token_embedding(input_ids)
@@ -250,11 +253,16 @@ class WaveNetworkLM(nn.Module):
             hidden_states = layer(hidden_states)
             
         # 最終ノーマライゼーション
-        hidden_states = self.norm(hidden_states)
+        last_hidden_states = self.norm(hidden_states)
 
-        logits = self.classifier(hidden_states)
-
-        return hidden_states # Cut Cross Entropyでは logitではなく embeddings=hidden_states を入力する
+        # 損失関数タイプに基づいて異なる出力を返す
+        if self.use_cut_cross_entropy:
+            # Cut Cross Entropyの場合はlast_hidden_statesを返す
+            return last_hidden_states
+        else:
+            # 通常のCross Entropyの場合はlogitsを返す
+            logits = self.classifier(last_hidden_states)
+            return logits
 
     def get_classifier_weights(self) -> torch.Tensor:
         """
