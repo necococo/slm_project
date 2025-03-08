@@ -95,7 +95,7 @@ def setup_environment(args):
 
 def load_dataset_from_disk_or_download(paths_config, args):
     """ディスクから前処理済みデータセットを読み込むか、新規ダウンロードします"""
-    if args.data_dir and os.path.exists(args.data_dir):::
+    if args.data_dir and os.path.exists(args.data_dir):
         print(f"前処理済みデータセットを読み込み中: {args.data_dir}")
         try:
             train_dataset = load_from_disk(os.path.join(args.data_dir, "train"))
@@ -222,7 +222,7 @@ def setup_tokenizer_and_model(paths_config, args):
     tokenizer = AutoTokenizer.from_pretrained(paths_config.tokenizer_name)
     
     # GPT-2トークナイザーの場合、パディングトークンが設定されていないため追加
-    if paths_config.tokenizer_name == "gpt2" and tokenizer.pad_token is None:::
+    if paths_config.tokenizer_name == "gpt2" and tokenizer.pad_token is None:
         print("GPT-2トークナイザーにパディングトークンを設定します")
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -360,217 +360,211 @@ def extract_embeddings(model, dataset, tokenizer, model_config, device, num_samp
             input_ids = torch.tensor([example["input_ids"][:model_config.max_seq_len]]).to(device)
             attention_mask = torch.tensor([example["attention_mask"][:model_config.max_seq_len]]).to(device)
             
-            # 埋め込み取得の修正: 正しい属性にアクセスする使用
-            # WaveNetworkLMモデルの構造に合わせた取得方法mbedding(input_ids)
-            if hasattr(model, 'token_embeddings'):
-                # モデル内にtoken_embeddings属性がある場合
-                wave_embedding = model.token_embeddings(input_ids)en_size]
-            elif hasattr(model, 'embeddings'):
-                # モデル内にembeddings属性がある場合idden_size
-                wave_embedding = model.embeddings(input_ids)
-            else:み層は複素数ではなく単なる実数のため、実部のみを使用
-                # 上記がない場合、モデルのフォワードパスを実行してトレースを有効にし、埋め込みを取得
-                print("直接埋め込み層にアクセスできないため、フォワードパス実行時の値を取得します")て扱う
-                # 埋め込み抽出用のフック
-                embedding_output = None
-                _expanded = attention_mask.unsqueeze(-1).expand_as(real_part)
-                def embedding_hook(module, input, output):m(dim=1) / mask_expanded.sum(dim=1)
-                    nonlocal embedding_output_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
-                    embedding_output = output.detach()
-                を収集
-                # レイヤー0（最初の層）からの出力をフックするsentence_real.cpu().numpy())
-                if hasattr(model, 'layers') and len(model.layers) > 0:
-                    hook = model.layers[0].register_forward_hook(embedding_hook)
-                    # フォワードパスを実行pend(imag_part[0].cpu().numpy())  # バッチ内の最初の例
-                    _ = model(input_ids, attention_mask=attention_mask)
-                    # フックを削除
-                    hook.remove()catenate(sentence_real_embeds, axis=0)
-                    beds = np.concatenate(sentence_imag_embeds, axis=0)
-                    if embedding_output is None:l_embeds, axis=0)
-                        raise ValueError("モデルからの埋め込み出力を取得できませんでした")
-                    
-                    wave_embedding = embedding_output
-                else:l': sentence_real_embeds,
-                    raise ValueError("モデル構造から埋め込み層を特定できません")
-            en_real': token_real_embeds,
-            # 実部と虚部を分離（モデル実装に応じて調整が必要）s
-            hidden_size = model_config.hidden_size
+            # WaveNetworkLMモデルの正しい埋め込み層にアクセス
+            wave_embedding = model.token_embedding(input_ids)
             
-            # モデルの出力形式に合わせて調整 (2*hidden_sizeの最後の次元か別々の実部・虚部)
-            if wave_embedding.size(-1) == 2 * hidden_size:
-                # 最後の次元に実部と虚部が連結されている場合
-                real_part = wave_embedding[:, :, :hidden_size]
-                imag_part = wave_embedding[:, :, hidden_size:]
-            elif isinstance(wave_embedding, tuple) and len(wave_embedding) == 2:
-                # 実部と虚部が別々に返される場合_real'].flatten(), bins=100, alpha=0.7)
-                real_part, imag_part = wave_embeddingn')
-            else:alue')
-                # その他の場合（複素数でない場合など）- 実部のみ使用し虚部はゼロ
-                print("警告: 複素数埋め込みではないようです。実部のみ使用し虚部はゼロとします")
-                real_part = wave_embedding
-                imag_part = torch.zeros_like(real_part)
-            lot(2, 2, 2)
-            # センテンスレベル埋め込み（シーケンスの平均）ag'].flatten(), bins=100, alpha=0.7)
+            # 埋め込み層は複素数ではなく単なる実数値のベクトル
+            real_part = wave_embedding  # 実部のみ
+            imag_part = torch.zeros_like(real_part)  # 虚部はゼロとして扱う
+            
+            # センテンスレベル埋め込み（シーケンスの平均）
             mask_expanded = attention_mask.unsqueeze(-1).expand_as(real_part)
             sentence_real = (real_part * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
             sentence_imag = (imag_part * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
-            (True, alpha=0.3)
+            
             # 結果を収集
             sentence_real_embeds.append(sentence_real.cpu().numpy())
             sentence_imag_embeds.append(sentence_imag.cpu().numpy())
             token_real_embeds.append(real_part[0].cpu().numpy())  # バッチ内の最初の例
             token_imag_embeds.append(imag_part[0].cpu().numpy())  # バッチ内の最初の例
-    plt.xlabel('Value')
-    # 結果を連結bel('Frequency')
+    
+    # 結果を連結
     sentence_real_embeds = np.concatenate(sentence_real_embeds, axis=0)
     sentence_imag_embeds = np.concatenate(sentence_imag_embeds, axis=0)
     token_real_embeds = np.concatenate(token_real_embeds, axis=0)
     token_imag_embeds = np.concatenate(token_imag_embeds, axis=0)
-    plt.hist(embeddings['token_imag'].flatten(), bins=100, alpha=0.7)
-    return {e('Token Level - Imaginary Part Distribution')
+    
+    return {
         'sentence_real': sentence_real_embeds,
         'sentence_imag': sentence_imag_embeds,
         'token_real': token_real_embeds,
         'token_imag': token_imag_embeds
-    }lt.tight_layout()
-    
+    }
+
 def visualize_embeddings(embeddings, paths_config):
-    """埋め込み表現の分布を可視化します"""in(paths_config.visualization_path, "embedding_distributions.png")
+    """埋め込み表現の分布を可視化します"""
     plt.figure(figsize=(20, 15))
-    print(f"Visualization saved to {save_path}")
+    
     # センテンスレベル実部
     plt.subplot(2, 2, 1)
     plt.hist(embeddings['sentence_real'].flatten(), bins=100, alpha=0.7)
     plt.title('Sentence Level - Real Part Distribution')
-    plt.xlabel('Value')alue.flatten()
+    plt.xlabel('Value')
     plt.ylabel('Frequency')
-    plt.grid(True, alpha=0.3)lat_values),
-            'std': np.std(flat_values),
-    # センテンスレベル虚部': np.min(flat_values),
-    plt.subplot(2, 2, 2)x(flat_values),
+    plt.grid(True, alpha=0.3)
+    
+    # センテンスレベル虚部
+    plt.subplot(2, 2, 2)
     plt.hist(embeddings['sentence_imag'].flatten(), bins=100, alpha=0.7)
     plt.title('Sentence Level - Imaginary Part Distribution')
     plt.xlabel('Value')
     plt.ylabel('Frequency')
-    plt.grid(True, alpha=0.3)(paths_config.visualization_path, "embedding_stats.txt")
-    with open(stats_path, 'w') as f:
-    # トークンレベル実部("Embedding Distribution Statistics\n")
-    plt.subplot(2, 2, 3)========================\n\n")
-    plt.hist(embeddings['token_real'].flatten(), bins=100, alpha=0.7)
-    plt.title('Token Level - Real Part Distribution')
-    plt.xlabel('Value')me, stat_value in stat.items():
-    plt.ylabel('Frequency') {stat_name}: {stat_value}\n")
     plt.grid(True, alpha=0.3)
     
-    # トークンレベル虚部tistics saved to {stats_path}")
+    # トークンレベル実部
+    plt.subplot(2, 2, 3)
+    plt.hist(embeddings['token_real'].flatten(), bins=100, alpha=0.7)
+    plt.title('Token Level - Real Part Distribution')
+    plt.xlabel('Value')
+    plt.ylabel('Frequency')
+    plt.grid(True, alpha=0.3)
+    
+    # トークンレベル虚部
     plt.subplot(2, 2, 4)
     plt.hist(embeddings['token_imag'].flatten(), bins=100, alpha=0.7)
     plt.title('Token Level - Imaginary Part Distribution')
     plt.xlabel('Value')
     plt.ylabel('Frequency')
     plt.grid(True, alpha=0.3)
-    plt.scatter(
-    plt.tight_layout()ntence_real'][0, :50],
-        embeddings['sentence_imag'][0, :50],
-    # 保存alpha=0.7
+    
+    plt.tight_layout()
+    
+    # 保存
     save_path = os.path.join(paths_config.visualization_path, "embedding_distributions.png")
-    plt.savefig(save_path)vel - Complex Plane (First 50 dims)')
+    plt.savefig(save_path)
     print(f"Visualization saved to {save_path}")
-    plt.ylabel('Imaginary')
-    # 追加の統計情報True, alpha=0.3)
-    stats = {}e(y=0, color='k', linestyle='-', alpha=0.3)
-    for key, value in embeddings.items():='-', alpha=0.3)
+    
+    # 追加の統計情報
+    stats = {}
+    for key, value in embeddings.items():
         flat_values = value.flatten()
-        stats[key] = {最初の50要素）
+        stats[key] = {
             'mean': np.mean(flat_values),
             'std': np.std(flat_values),
-            'min': np.min(flat_values),],
-            'max': np.max(flat_values),],
+            'min': np.min(flat_values),
+            'max': np.max(flat_values),
             'abs_mean': np.mean(np.abs(flat_values))
         }
-    plt.title('Token Level - Complex Plane (First 50 dims)')
-    # 統計情報の保存l('Real')
+    
+    # 統計情報の保存
     stats_path = os.path.join(paths_config.visualization_path, "embedding_stats.txt")
     with open(stats_path, 'w') as f:
-        f.write("Embedding Distribution Statistics\n").3)
-        f.write("===============================\n\n").3)
+        f.write("Embedding Distribution Statistics\n")
+        f.write("===============================\n\n")
         for key, stat in stats.items():
             f.write(f"{key}:\n")
             for stat_name, stat_value in stat.items():
-                f.write(f"  {stat_name}: {stat_value}\n")zation_path, "complex_plane.png")
-            f.write("\n")ave_path)
-    print(f"Complex plane visualization saved to {complex_save_path}")
+                f.write(f"  {stat_name}: {stat_value}\n")
+            f.write("\n")
+    
     print(f"Statistics saved to {stats_path}")
-    main():
+    
     # 追加の可視化：複素平面上の散布図（サンプル）
     plt.figure(figsize=(15, 15))
-    args = parse_arguments()
+    
     # センテンスレベル（最初の50要素）
-    plt.subplot(1, 2, 1)work 学習・埋め込み分析 ({args.language}) ===")
+    plt.subplot(1, 2, 1)
     plt.scatter(
         embeddings['sentence_real'][0, :50],
-        embeddings['sentence_imag'][0, :50],(args)
+        embeddings['sentence_imag'][0, :50],
         alpha=0.7
-    )ry:
+    )
     plt.title('Sentence Level - Complex Plane (First 50 dims)')
-    plt.xlabel('Real')_dataset_from_disk_or_download(paths_config, args)
-    plt.ylabel('Imaginary')
-    plt.grid(True, alpha=0.3)シーケンス長指定）
-    plt.axhline(y=0, color='k', linestyle='-', alpha=0.3)and_model(paths_config, args)
-    plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
-        
-    # トークンレベル（最初のトークン、最初の50要素）
-    plt.subplot(1, 2, 2)セット: {paths_config.dataset_name}/{paths_config.dataset_subset}")
-    plt.scatter(text-103" in paths_config.dataset_subset:
-        embeddings['token_real'][0, :50],タセットで、より長いシーケンスを含んでいます")
-        embeddings['token_imag'][0, :50],max_seq_len}に設定されています。長いシーケンスを活用するには2048程度が推奨されます。")
-        alpha=0.7
-    )   # データ準備
-    plt.title('Token Level - Complex Plane (First 50 dims)')aset = prepare_data_for_training(
-    plt.xlabel('Real')okenizer, model_config, batch_size=args.batch_size
+    plt.xlabel('Real')
     plt.ylabel('Imaginary')
     plt.grid(True, alpha=0.3)
     plt.axhline(y=0, color='k', linestyle='-', alpha=0.3)
     plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
-        
-    plt.tight_layout()引数で上書き
-        training_config = TrainingConfig(
+    
+    # トークンレベル（最初のトークン、最初の50要素）
+    plt.subplot(1, 2, 2)
+    plt.scatter(
+        embeddings['token_real'][0, :50],
+        embeddings['token_imag'][0, :50],
+        alpha=0.7
+    )
+    plt.title('Token Level - Complex Plane (First 50 dims)')
+    plt.xlabel('Real')
+    plt.ylabel('Imaginary')
+    plt.grid(True, alpha=0.3)
+    plt.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+    plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
+    
+    plt.tight_layout()
+    
     complex_save_path = os.path.join(paths_config.visualization_path, "complex_plane.png")
-    plt.savefig(complex_save_path)size,
+    plt.savefig(complex_save_path)
     print(f"Complex plane visualization saved to {complex_save_path}")
-            mlm_probability=0.15,
-def main(): warmup_steps=100,
-    """メイン実行関数"""mp=True,
-    # 引数解析  clip_grad_norm=True,
+
+def main():
+    """メイン実行関数"""
+    # 引数解析
     args = parse_arguments()
-        )
+    
     print(f"=== Wave Network 学習・埋め込み分析 ({args.language}) ===")
-        # トレーナー初期化とトレーニング
-    # 環境設定ainer = Trainer(
+    
+    # 環境設定
     device, paths_config = setup_environment(args)
-            train_dataset=train_dataset,
-    try:    valid_dataset=valid_dataset,
-        # データセットのロード（前処理済みorダウンロード）g_config,
+    
+    try:
+        # データセットのロード（前処理済みorダウンロード）
         dataset = load_dataset_from_disk_or_download(paths_config, args)
-            paths_config=paths_config
+        
         # トークナイザーとモデルのセットアップ（シーケンス長指定）
         tokenizer, model, model_config = setup_tokenizer_and_model(paths_config, args)
-        model.to(device)m()
+        model.to(device)
         
         # データセットのタイプに関する情報を表示
         print(f"選択されたデータセット: {paths_config.dataset_name}/{paths_config.dataset_subset}")
-        if "wikitext-103" in paths_config.dataset_subset:set, tokenizer, model_config, device)
+        if "wikitext-103" in paths_config.dataset_subset:
             print("注意: WikiText-103は大規模データセットで、より長いシーケンスを含んでいます")
             print(f"シーケンス長が{model_config.max_seq_len}に設定されています。長いシーケンスを活用するには2048程度が推奨されます。")
-        visualize_embeddings(embeddings, paths_config)
+        
         # データ準備
         train_loader, valid_loader, train_dataset, valid_dataset = prepare_data_for_training(
             dataset, tokenizer, model_config, batch_size=args.batch_size
-        )t Exception as e:
-        print(f"実行中にエラーが発生しました: {e}")
-        # モデル学習traceback
+        )
+        
+        # モデル学習
         print("\nモデルの学習を開始します...")
         
         # 学習設定をコマンドライン引数で上書き
         training_config = TrainingConfig(
-            learning_rate=args.learning_rate,            batch_size=args.batch_size,            mlm_epochs=args.epochs,            mlm_probability=0.15,            warmup_steps=100,            use_amp=True,            clip_grad_norm=True,            clip_value=1.0        )                # トレーナー初期化とトレーニング        trainer = Trainer(            model=model,            train_dataset=train_dataset,            valid_dataset=valid_dataset,            training_config=training_config,            device=device,            paths_config=paths_config        )                trainer.train_mlm()                # 埋め込み抽出と可視化        print("\n埋め込み抽出を行います...")        embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device)                print("\n埋め込み分布を可視化しています...")        visualize_embeddings(embeddings, paths_config)                print("\n分析完了!")            except Exception as e:        print(f"実行中にエラーが発生しました: {e}")        import traceback        traceback.print_exc()if __name__ == "__main__":    main()            batch_size=args.batch_size,            mlm_epochs=args.epochs,            mlm_probability=0.15,            warmup_steps=100,            use_amp=True,            clip_grad_norm=True,            clip_value=1.0        )                # トレーナー初期化とトレーニング        trainer = Trainer(            model=model,            train_dataset=train_dataset,            valid_dataset=valid_dataset,            training_config=training_config,            device=device,            paths_config=paths_config        )                trainer.train_mlm()                # 埋め込み抽出と可視化        print("\n埋め込み抽出を行います...")        embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device)                print("\n埋め込み分布を可視化しています...")        visualize_embeddings(embeddings, paths_config)                print("\n分析完了!")            except Exception as e:        print(f"実行中にエラーが発生しました: {e}")        import traceback        traceback.print_exc()if __name__ == "__main__":    main()
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            mlm_epochs=args.epochs,
+            mlm_probability=0.15,
+            warmup_steps=100,
+            use_amp=True,
+            clip_grad_norm=True,
+            clip_value=1.0
+        )
+        
+        # トレーナー初期化とトレーニング
+        trainer = Trainer(
+            model=model,
+            train_dataset=train_dataset,
+            valid_dataset=valid_dataset,
+            training_config=training_config,
+            device=device,
+            paths_config=paths_config
+        )
+        
+        trainer.train_mlm()
+        
+        # 埋め込み抽出と可視化
+        print("\n埋め込み抽出を行います...")
+        embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device)
+        
+        print("\n埋め込み分布を可視化しています...")
+        visualize_embeddings(embeddings, paths_config)
+        
+        print("\n分析完了!")
+        
+    except Exception as e:
+        print(f"実行中にエラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
