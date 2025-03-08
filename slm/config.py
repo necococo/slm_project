@@ -26,8 +26,8 @@ class ModelConfig:
     """
     def __init__(
         self,
-        hidden_size: int = 768,
-        num_layers: int = 3,
+        hidden_size: int = 768,  # より大きな値に調整（例：1024）
+        num_layers: int = 4,     # レイヤー数を増やす（例：6-12）
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
         max_seq_len: int = 512,
         dropout_prob: float = 0.2,

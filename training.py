@@ -52,6 +52,10 @@ def parse_arguments():
                        help='Cut Cross Entropyを使用する（デフォルト: True）')
     parser.add_argument('--no_cut_cross_entropy', action='store_false', dest='use_cut_cross_entropy',
                        help='通常のCross Entropyを使用する')
+    parser.add_argument('--warmup_steps', type=int, default=100,
+                       help='学習率ウォームアップのステップ数')
+    parser.add_argument('--weight_decay', type=float, default=0.01,
+                       help='Weight decayの強さ')
     return parser.parse_args()
 
 def setup_environment(args):
@@ -551,11 +555,11 @@ def main():
             batch_size=args.batch_size,
             mlm_epochs=args.epochs,
             mlm_probability=0.15,
-            weight_decay=0.01,
-            warmup_steps=100,
+            weight_decay=getattr(args, 'weight_decay', 0.01),
+            warmup_steps=getattr(args, 'warmup_steps', 100),
             use_amp=True,
             clip_grad_norm=True,
-            clip_value=1.0
+            clip_value=1.0  # 勾配爆発を防ぐ適切な値を設定
         )
         
         # トレーナー初期化とトレーニング

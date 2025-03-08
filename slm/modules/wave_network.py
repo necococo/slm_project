@@ -25,8 +25,8 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     Returns:
         (real_part, imag_part): 波表現の実部と虚部
     """
-    # 数値安定性のためにepsを大きくする
-    eps = 1e-4  # 以前は1e-5
+    # 数値安定性のためにepsを調整
+    eps = 1e-4  # 1e-3などより大きな値も試してみる価値があります
     
     # 念の為float32に強制変換し、NaNをチェック
     x = x.float()
@@ -47,11 +47,9 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     
     G_safe = torch.clamp(G, min=eps)
     
-    # 比率計算の数値安定性強化
+    # 比率計算の数値安定性強化 - タンジェントのスケールを調整
     ratio = x / G_safe
-    
-    # 改善点: クリッピングの代わりにtanh関数を使用
-    ratio = torch.tanh(ratio) * 0.99  # 新実装: 滑らかな制限で[-0.99, 0.99]に
+    ratio = torch.tanh(ratio) * 0.95  # 0.99から0.95に変更してより安全なマージンを確保
     
     # 位相角 (α_jk) の計算
     inside = 1.0 - ratio**2
@@ -79,12 +77,12 @@ class SingleWaveLayer(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         
-        # 論文の図6ではFFNが波表現空間で処理を行っている
-        # 波表現は2*hidden_sizeの次元を持つ
-        expansion_factor = 4
+        # 拡張係数を大きくして表現力を向上
+        expansion_factor = 6  # 4から6に増加
         self.ffn = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size * 2 * expansion_factor),
             nn.GELU(),
+            nn.Dropout(dropout_prob),  # ドロップアウトを追加
             nn.Linear(hidden_size * 2 * expansion_factor, hidden_size * 2)
         )
         
