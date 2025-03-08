@@ -10,7 +10,7 @@ setup(
         "datasets",
         "huggingface_hub",
         "pytest",
-        "bitsandbytes",
+        "bitsandbytes>=0.41.0,<0.42.0",
         "fugashi",
         "ipadic",
         "unidic-lite",
