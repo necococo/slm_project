@@ -149,14 +149,6 @@ class PathsConfig:
         tokenizer_file = None, # 追加: 実際のファイル名を指定
         language: str = "ja"  # 追加: 言語選択（'ja'または'en'）
     ) -> None:
-        self.base_dir = base_dir
-        self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
-        self.log_dir = os.path.join(self.base_dir, "logs")
-        self.visualization_dir = os.path.join(self.log_dir, "visualizations")  # 追加: 可視化結果保存ディレクトリ
-        self.language = language
-        self.data_dir = os.path.join(self.base_dir, "data", self.language, self.dataset_name, self.dataset_subset)
-
-        
         # 言語に基づいてデータセットとトークナイザーを設定
         if language == "en":
             # 英語用のデフォルト設定
@@ -170,26 +162,41 @@ class PathsConfig:
             self.dataset_subset = "corpus-jawiki-20230403-filtered-large"
             self.tokenizer_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
             self.tokenizer_file = "tokenizer_model.json"
+
+        self.base_dir = base_dir
+        self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
+        self.log_dir = os.path.join(self.base_dir, "logs")
+        self.visualization_dir = os.path.join(self.log_dir, "visualizations")  # 追加: 可視化結果保存ディレクトリ
+        self.language = language
+        self.data_dir = os.path.join(self.base_dir, "data", self.language, self.dataset_name, self.dataset_subset)
     
     @property
     def dataset_dir(self) -> str:
         """データセットの保存ディレクトリパスを返します"""
+        # 無限再帰を修正 - self.dataset_dirを呼び出すと自分自身を呼び出してしまう
+        os.makedirs(self.data_dir, exist_ok=True)
         return self.data_dir
         
     @property
     def tokenizer_path(self) -> str:
         """トークナイザーモデルのパスを返します"""
-        return os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_name, self.tokenizer_file)
+        tknr_path = os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_name, self.tokenizer_file)
+        # ファイルではなく親ディレクトリを作成する必要がある
+        os.makedirs(os.path.dirname(tknr_path), exist_ok=True)
+        return tknr_path
         
     @property
     def model_save_dir(self) -> str:
         """モデル保存ディレクトリを返します"""
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         return self.checkpoint_dir
         
     @property
     def tensorboard_log_dir(self) -> str:
-        """TensorBoardのログディレクトリを返します"""
-        return os.path.join(self.log_dir, "tensorboard")
+        """TensorBoardのログディレクトリを作って返します"""
+        tb_log_dir = os.path.join(self.log_dir, "tensorboard")
+        os.makedirs(tb_log_dir, exist_ok=True)
+        return tb_log_dir
         
     @property
     def visualization_path(self) -> str:
