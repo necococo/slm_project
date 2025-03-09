@@ -308,10 +308,34 @@ class Trainer:
             vocab_size=vocab_size
         ).to(self.device)
         
+        # diffusion学習用のカスタムコレーターを使用
+        try:
+            from slm.collator import CustomCollator
+            # トークナイザーの取得
+            tokenizer = self.model.config.tokenizer
+            if tokenizer is None:
+                print("警告: tokenizer が None です。デフォルトのコレーターを使用します。")
+                collator = None
+            else:
+                # diffusion学習用のカスタムコレーター
+                collator = CustomCollator(
+                    tokenizer=tokenizer,
+                    model_config=self.model.config,
+                    mlm=True,  # マスキングを有効化
+                    mlm_probability=self.training_config.mlm_probability,
+                    mask_token_id=mask_token_id,
+                    qa=False
+                )
+                print(f"Diffusion学習用のカスタムコレーターを初期化しました。マスク確率: {self.training_config.mlm_probability}")
+        except Exception as e:
+            print(f"コレーターの初期化中にエラーが発生しました: {e}")
+            collator = None
+        
         dataloader = DataLoader(
             self.train_dataset,
             batch_size=self.training_config.batch_size,
-            shuffle=True
+            shuffle=True,
+            collate_fn=collator
         )
         
         total_steps = 0
@@ -356,19 +380,30 @@ class Trainer:
         self.writer.add_scalar("Diffusion/Total Training Time (min)", total_time / 60, 0)
         print(f"Diffusion training done in {total_time / 60:.2f} minutes")
 
-    def _diffusion_train_step(self, batch: Dict[str, torch.Tensor], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
+    def _diffusion_train_step(self, batch: Dict[str, Any], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
         self.model.train()
+        
+        # バッチの変換を安全に行う
+        def safe_to_device(tensor_or_list):
+            if isinstance(tensor_or_list, torch.Tensor):
+                return tensor_or_list.to(self.device)
+            elif isinstance(tensor_or_list, list):
+                # リストならテンソルに変換
+                return torch.tensor(tensor_or_list, device=self.device)
+            else:
+                raise ValueError(f"Unsupported type: {type(tensor_or_list)}")
+        
         # input_idsとlabelsキーが存在するか確認（データフォーマットが異なる可能性に対応）
         if "input_ids" in batch:
-            input_ids = batch["input_ids"].to(self.device)
+            input_ids = safe_to_device(batch["input_ids"])
         elif "tokens" in batch:
-            input_ids = batch["tokens"].to(self.device)
+            input_ids = safe_to_device(batch["tokens"])
         else:
             raise ValueError("バッチにinput_idsまたはtokensキーが存在しません")
             
         # ラベルの処理
         if "labels" in batch:
-            labels = batch["labels"].to(self.device)
+            labels = safe_to_device(batch["labels"])
         else:
             # ラベルが提供されていない場合は、diffuserを使って生成する
             noisy_tokens, labels = diffuser(input_ids.clone(), torch.tensor([t], device=self.device))
