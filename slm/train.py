@@ -362,6 +362,13 @@ class Trainer:
             return 0.0
         self.model.eval()
         
+        # メモリを解放
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # 検証用のバッチサイズは小さめに設定（OOM対策）
+        eval_batch_size = min(4, self.training_config.batch_size)
+        
         # カスタムコレータの取得
         tokenizer = self.model.config.tokenizer
         collator = CustomCollator(
@@ -375,37 +382,86 @@ class Trainer:
         
         dataloader = DataLoader(
             self.valid_dataset,
-            batch_size=self.training_config.batch_size,
+            batch_size=eval_batch_size,  # 小さめのバッチサイズを使用
             shuffle=False,
             collate_fn=collator
         )
         
+        # 検証中のメモリを監視（オプション）
+        max_memory_used = 0
+        if torch.cuda.is_available():
+            max_memory_used = torch.cuda.memory_allocated() / 1e6
+        
         total_loss = 0.0
+        total_batches = min(10, len(dataloader))  # 最大10バッチに制限
+        
         with torch.no_grad():
-            for batch in dataloader:
+            for i, batch in enumerate(dataloader):
+                # 最大10バッチまでで終了（メモリ使用量を制限）
+                if i >= total_batches:
+                    break
+                    
                 input_ids = batch["input_ids"].to(self.device)
                 labels = batch["labels"].to(self.device)
                 
-                # use_cut_cross_entropyフラグに基づいて処理を変更
-                if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                    # Cut Cross Entropy用の処理
-                    embeddings = self.model(input_ids)
-                    classifier = self.model.get_classifier_weights()
+                try:
+                    # AMPを使用
+                    if self.training_config.use_amp and torch.cuda.is_available():
+                        with torch.cuda.amp.autocast():
+                            # use_cut_cross_entropyフラグに基づいて処理を変更
+                            if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                                # Cut Cross Entropy用の処理
+                                embeddings = self.model(input_ids)
+                                classifier = self.model.get_classifier_weights()
+                                # 必ず半精度に変換（linear_cross_entropy の要件）
+                                embeddings = embeddings.half()
+                                classifier = classifier.half()
+                                loss = linear_cross_entropy(embeddings, classifier, labels)
+                            else:
+                                # 通常のCross Entropy用の処理
+                                logits = self.model(input_ids)
+                                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                    else:
+                        # AMPなしの処理
+                        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                            # Cut Cross Entropy用の処理
+                            embeddings = self.model(input_ids)
+                            classifier = self.model.get_classifier_weights()
+                            # 必ず半精度に変換（linear_cross_entropy の要件）
+                            embeddings = embeddings.half()
+                            classifier = classifier.half()
+                            loss = linear_cross_entropy(embeddings, classifier, labels)
+                        else:
+                            # 通常のCross Entropy用の処理
+                            logits = self.model(input_ids)
+                            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
                     
-                    # 必ず半精度に変換（linear_cross_entropy の要件）
-                    embeddings = embeddings.half()
-                    classifier = classifier.half()
+                    total_loss += loss.item()
                     
-                    loss = linear_cross_entropy(embeddings, classifier, labels)
-                else:
-                    # 通常のCross Entropy用の処理
-                    logits = self.model(input_ids)
-                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                    # メモリ使用量を監視
+                    if torch.cuda.is_available():
+                        current_memory = torch.cuda.memory_allocated() / 1e6
+                        max_memory_used = max(max_memory_used, current_memory)
+                        
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print(f"WARNING: GPU ran out of memory during validation, using loss from {i} batches")
+                        if i == 0:
+                            # 最初のバッチでOOMが発生した場合、高い損失を返す
+                            return 100.0
+                        break
+                    else:
+                        raise e
                 
-                total_loss += loss.item()
+                # バッチごとにメモリを解放
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
-        avg_loss = total_loss / len(dataloader)
-        print(f"Validation Loss: {avg_loss:.4f}")
+        # 処理したバッチ数で割る
+        processed_batches = min(i + 1, total_batches)
+        avg_loss = total_loss / processed_batches if processed_batches > 0 else 100.0
+        
+        print(f"Validation Loss: {avg_loss:.4f} (using {processed_batches} batches, max memory: {max_memory_used:.2f}MB)")
         return avg_loss
 
     def save_checkpoint(self, name: str) -> None:

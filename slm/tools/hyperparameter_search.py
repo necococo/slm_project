@@ -738,9 +738,15 @@ def run_hyperparameter_search(
     search_config.storage = f"sqlite:///{paths_config.base_dir}/optuna_{search_config.study_name}.db"
     
     # データセット準備（選択対象のデータセットをロード）
-    # フルデータをロードし、後でサンプリングする方式に変更
+    # データセットを小さめにロード（サンプルサイズを直接使用）
+    # 明示的にサンプルサイズを渡してデータセットをロード
+    sample_size_to_use = search_config.sample_size or 1000  # デフォルト1000
+    sample_ratio_to_use = search_config.sample_ratio
+    
+    print(f"データセットをロード中: サンプルサイズ={sample_size_to_use}, サンプル比率={sample_ratio_to_use}")
+    
     dataset = load_and_prepare_dataset(
-        paths_config, base_config, sample_size=None, sample_ratio=None
+        paths_config, base_config, sample_size=sample_size_to_use, sample_ratio=sample_ratio_to_use
     )
     
     # 検証データセットが存在するかチェック（validation, valid, testなど様々な名前がある可能性）
@@ -767,7 +773,6 @@ def run_hyperparameter_search(
     # CUDA メモリ管理設定
     if torch.cuda.is_available():
         # メモリフラグメンテーション対策として expandable_segments を有効化
-        import os
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         print("CUDA memory management configuration set: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
         
