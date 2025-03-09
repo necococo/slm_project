@@ -5,10 +5,10 @@ setup(
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
-        "sentencepiece",
+        # "sentencepiece",
         "pywavelets",
         "datasets",
-        "huggingface_hub",
+        # "huggingface_hub",
         "bitsandbytes>=0.41.0,<0.42.0",
         "fugashi",
         "ipadic",

@@ -280,7 +280,6 @@ class WaveNetworkLM(nn.Module):
         """
         How:
             cut-cross-entropyで linear_cross_entropy() を呼ぶ際に必要となる
-            分類器の重み (V, D) を返す。
-        """
-        # classifier.weight shape: (V, D)
+            分類器の重み (V, D)を返す。
+"""
         return self.classifier.weight

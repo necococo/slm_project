@@ -22,7 +22,7 @@ import torch
 from typing import Dict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from slm.modules import WaveNetworklLM
+from slm.modules.wave_network import WaveNetworkLM
 from slm.evaluation import (
     evaluate_perplexity,
     evaluate_bleu,
@@ -30,7 +30,7 @@ from slm.evaluation import (
 )
 
 def compare_two_models(
-    ours: WaveHierarchicalLM,
+    ours: WaveNetworkLM,
     hf_model_name: str,
     dataset,
     device: torch.device,

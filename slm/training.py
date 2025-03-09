@@ -12,32 +12,27 @@ from slm.config import ModelConfig
 from slm.config import TrainingConfig
 from slm.train import Trainer
 # 適切なインポートに修正
-from slm.easy_config import EasyConfig, get_config
 from slm.modules.wave_network import WaveNetworkModel
 # 分析機能を専用モジュールからインポート
 from slm.tools.analysis import extract_embeddings, visualize_embeddings
-from slm.data.data_processor import preprocess_dataset_for_mlm
-
 
 def setup_environment(config):
     """環境のセットアップを行う"""
-    # デバイスの設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
-    # パス設定
+    # PathsConfigをconfigの各項目から初期化
     paths_config = PathsConfig(
-        output_dir=config.output_dir,
-        cache_dir=config.cache_dir,
+        base_dir=getattr(config, "base_dir", os.getcwd()),
         dataset_name=config.dataset_name,
         dataset_subset=config.dataset_subset,
-        language=config.language
+        tokenizer_name=getattr(config, "tokenizer_name", "cl-tohoku/bert-base-japanese-whole-word-masking"),
+        output_dir=getattr(config, "output_dir", os.path.join(os.getcwd(), "output")),
+        cache_dir=getattr(config, "cache_dir", os.path.join(os.getcwd(), "cache"))
     )
-    
-    # 必要なディレクトリを作成
-    os.makedirs(paths_config.model_path, exist_ok=True)
+    # 正しいディレクトリ群を作成
+    os.makedirs(paths_config.checkpoint_dir, exist_ok=True)
     os.makedirs(paths_config.visualization_path, exist_ok=True)
-    os.makedirs(paths_config.tokenizer_path, exist_ok=True)
+    os.makedirs(os.path.join(paths_config.checkpoint_dir, "tokenizers"), exist_ok=True)
     os.makedirs(paths_config.logs_path, exist_ok=True)
     
     return device, paths_config

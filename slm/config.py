@@ -132,12 +132,13 @@ class PathsConfig:
     """
     def __init__(
         self,
-        base_dir: str = "/content/drive/MyDrive/slm",
-        dataset_name: str = "singletongue/wikipedia-utils",
-        dataset_subset: Optional[str] = "corpus-jawiki-20230403-filtered-large",
-        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking", # 修正: 正しいリポジトリ名
-        tokenizer_file: str = "tokenizer_model.json" # 追加: 実際のファイル名を指定
-    ) -> None:
+        base_dir: str = os.getcwd(),  # カレントディレクトリを基準
+        dataset_name: str = "default_dataset",
+        dataset_subset: Optional[str] = None,
+        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking",
+        output_dir: Optional[str] = None,
+        cache_dir: Optional[str] = None
+    ):
         self.base_dir = base_dir
         self.data_dir = os.path.join(self.base_dir, "data")
         self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
@@ -145,7 +146,10 @@ class PathsConfig:
         self.dataset_name = dataset_name
         self.dataset_subset = dataset_subset
         self.tokenizer_name = tokenizer_name
-        self.tokenizer_file = tokenizer_file  # 追加: ファイル名を保存
+        self.output_dir = output_dir if output_dir is not None else os.path.join(self.base_dir, "output")
+        self.cache_dir = cache_dir if cache_dir is not None else os.path.join(self.base_dir, "cache")
+        self.visualization_path = os.path.join(self.output_dir, "visualizations")
+        self.logs_path = os.path.join(self.log_dir, "tensorboard")
     
     @property
     def dataset_dir(self) -> str:
@@ -168,3 +172,6 @@ class PathsConfig:
     def tensorboard_log_dir(self) -> str:
         """TensorBoardのログディレクトリを返します"""
         return os.path.join(self.log_dir, "tensorboard")
+
+# No code should be placed here. The config.py file should end after the PathsConfig class.
+# This appears to be model initialization code that belongs in a different module.
