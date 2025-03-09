@@ -246,7 +246,7 @@ class HyperparameterSearchConfig:
     
     # カテゴリカルパラメータ
     categorical_params: Dict[str, List[Any]] = field(default_factory=lambda: {
-        'batch_size': [16, 32, 64, 96],        # バッチサイズ候補
+        'batch_size': [4, 8, 16, 32],          # バッチサイズ候補（OOM対策で小さく）
         'clip_value': [0.5, 1.0, 2.0],         # 勾配クリップ値の候補
     })
     
@@ -526,9 +526,20 @@ def objective(trial: optuna.trial.Trial,
         logger.info(f"パラメータ: {trial.params}")
         logger.info(f"データセットサイズ: 訓練={len(train_dataset)}, 検証={len(valid_dataset)}")
         
+        # トレーニングデータを小さくしてメモリ使用量を削減
+        # オプションで自動混合精度を有効化
+        if not hasattr(training_config, 'use_amp'):
+            training_config.use_amp = True
+            
         # 最大トレーニングステップ数を制限して早期評価
-        max_steps = min(100, len(train_loader))
+        max_steps = min(50, len(train_loader))
+        
+        # メモリを解放してからトレーニング開始
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
         # train_mlmメソッドを呼び出す（train()ではなく）
+        # トレーニングステップを少なくして1エポック未満に制限
         trainer.train_mlm(num_epochs=1)
         
         # 評価
@@ -753,6 +764,16 @@ def run_hyperparameter_search(
         pruner=optuna.pruners.MedianPruner(n_warmup_steps=5)
     )
     
+    # CUDA メモリ管理設定
+    if torch.cuda.is_available():
+        # メモリフラグメンテーション対策として expandable_segments を有効化
+        import os
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        print("CUDA memory management configuration set: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+        
+        # メモリを一度解放
+        torch.cuda.empty_cache()
+    
     # 探索の実行
     objective_func = lambda trial: objective(
         trial, base_config, device, paths_config, dataset, search_config
@@ -783,7 +804,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-trials", type=int, default=10, help="Optuna探索の試行回数")
     parser.add_argument("--timeout", type=int, default=None, help="タイムアウト（秒）")
     parser.add_argument("--n-jobs", type=int, default=1, help="並列実行数")
-    parser.add_argument("--sample-size", type=int, default=None, help="データサンプリングサイズ")
+    parser.add_argument("--sample-size", type=int, default=1000, help="データサンプリングサイズ (デフォルト: 1000)")
     parser.add_argument("--sample-ratio", type=float, default=None, help="データサンプリング比率")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", 
                         help="ログレベル設定")

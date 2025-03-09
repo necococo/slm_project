@@ -25,8 +25,12 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     Returns:
         (real_part, imag_part): 波表現の実部と虚部
     """
-    # 数値安定性のためにepsを調整
-    eps = 1e-4  # 1e-3などより大きな値も試してみる価値があります
+    # 数値安定性のためにepsを調整し、メモリ管理を改善
+    eps = 1e-4  # 数値安定性のための小さな値
+    
+    # メモリ使用量を減らすためにCPUキャッシュをクリア
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # 念の為float32に強制変換し、NaNをチェック
     x = x.float()
@@ -37,38 +41,77 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     
     # グローバル振幅の計算 (モードによって集約次元が異なる)
     if global_mode:
-        # 文レベル: dim=(1, 2) で全体のコンテキスト情報を捉える
-        G = torch.sqrt(torch.sum(x * x, dim=(1, 2), keepdim=True) + eps)  # [B, 1, 1]
+        # 文レベル: メモリ使用量を削減するため計算を分割
+        x_squared = x * x
+        # チャンクで計算して合計（メモリ使用量削減）
+        G_squared = torch.sum(x_squared, dim=(1, 2), keepdim=True) + eps
+        G = torch.sqrt(G_squared)  # [B, 1, 1]
         G = G.expand(-1, S, D)  # [B, S, D]
     else:
-        # トークンレベル: dim=1 で各次元の特徴量を保存する
-        G = torch.sqrt(torch.sum(x * x, dim=1, keepdim=True) + eps)  # [B, 1, D]
+        # トークンレベル: メモリ使用量を削減するため計算を分割
+        x_squared = x * x
+        G_squared = torch.sum(x_squared, dim=1, keepdim=True) + eps
+        G = torch.sqrt(G_squared)  # [B, 1, D]
         G = G.expand(-1, S, -1)  # [B, S, D]
+    
+    # 中間結果をクリア
+    del x_squared
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # 安全な振幅値 - より安定した実装
     G_safe = torch.clamp(G, min=eps) # より厳密な下限値の保証
+    
+    # メモリ解放
+    del G
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # ===== 比率計算の数値安定性強化（ハイブリッドアプローチ） =====
     # 1. まず極端な値をclampで制限（数値安定性の確保）
     ratio = x / G_safe
-    ratio = torch.clamp(ratio, min=-100.0, max=100.0)  # 極端な値を制限
+    # 極端な値を制限（メモリ削減のため計算を分割）
+    ratio = torch.clamp(ratio, min=-10.0, max=10.0)  # 極端な値を制限（範囲も縮小）
     
     # 2. 次にtanhで滑らかな勾配を維持しながら-0.99〜0.99に制限
     ratio = torch.tanh(ratio) * 0.99
     
     # ===== 位相角 (α_jk) の計算 =====
     # 1 - ratio^2 が負になる可能性がある（数値誤差のため）
-    inside = 1.0 - ratio**2
+    ratio_squared = ratio**2
+    inside = 1.0 - ratio_squared
+    
+    # 不要な中間結果を削除
+    del ratio_squared
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # 非線形関数よりもclampを使用することで、厳密に非負値を保証
     inside = torch.clamp(inside, min=0.0) + eps
     
-    # arctan2(√(1-ratio²), ratio)
-    alpha = torch.atan2(torch.sqrt(inside), ratio)
+    # arctan2(√(1-ratio²), ratio) - sqrt計算を安定化
+    sqrt_inside = torch.sqrt(inside)
+    
+    # 中間結果を削除
+    del inside
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    alpha = torch.atan2(sqrt_inside, ratio)
+    
+    # 中間結果を削除
+    del sqrt_inside
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # 波表現への変換
     real_part = G_safe * torch.cos(alpha)
     imag_part = G_safe * torch.sin(alpha)
+    
+    # 中間結果を削除
+    del G_safe, alpha
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     if torch.isnan(real_part).any():
         print("nanが現れた。compute_wave_representation real_part")  

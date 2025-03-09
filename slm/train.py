@@ -158,54 +158,102 @@ class Trainer:
         self.model.train()
         input_ids = batch["input_ids"].to(self.device)
         labels = batch["labels"].to(self.device)
-
+        
+        # メモリ最適化: バッチサイズが大きすぎる場合の対策
+        batch_size = input_ids.size(0)
+        max_micro_batch = 4  # マイクロバッチの最大サイズ (調整可能)
+        
+        # メモリ使用量を減らすためにCPUキャッシュをクリア
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         self.optimizer.zero_grad()
-
-        # AMPの使用有無に関わらず、モデルのフラグに基づいて適切な損失計算を行う
-        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-            # Cut Cross Entropy用の処理
-            if self.scaler is not None:
-                with torch.cuda.amp.autocast():
-                    embeddings = self.model(input_ids)  # hidden_statesが返される
+        
+        # マイクロバッチでの処理（大きなバッチを小さく分割）
+        if batch_size > max_micro_batch and self.training_config.use_amp:
+            # バッチを分割
+            num_micro_batches = (batch_size + max_micro_batch - 1) // max_micro_batch
+            total_loss = 0.0
+            
+            for i in range(num_micro_batches):
+                start_idx = i * max_micro_batch
+                end_idx = min((i + 1) * max_micro_batch, batch_size)
+                micro_input_ids = input_ids[start_idx:end_idx]
+                micro_labels = labels[start_idx:end_idx]
+                
+                # オリジナルと同じ損失計算ロジック（マイクロバッチに対して）
+                if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                    with torch.cuda.amp.autocast():
+                        embeddings = self.model(micro_input_ids)
+                        classifier = self.model.get_classifier_weights()
+                        embeddings = embeddings.half()
+                        classifier = classifier.half()
+                        micro_loss = linear_cross_entropy(embeddings, classifier, micro_labels)
+                else:
+                    with torch.cuda.amp.autocast():
+                        logits = self.model(micro_input_ids)
+                        micro_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), micro_labels.view(-1))
+                
+                # 損失を正規化してバッチサイズ不変でスケール
+                micro_loss = micro_loss * (end_idx - start_idx) / batch_size
+                
+                # 勾配を蓄積
+                micro_loss.backward()
+                total_loss += micro_loss.item() * batch_size / (end_idx - start_idx)
+                
+                # マイクロバッチごとにメモリを解放
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            loss_item = total_loss
+        else:
+            # 通常の処理（バッチサイズが小さい場合）
+            if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                # Cut Cross Entropy用の処理
+                if self.scaler is not None:
+                    with torch.cuda.amp.autocast():
+                        embeddings = self.model(input_ids)  # hidden_statesが返される
+                        classifier = self.model.get_classifier_weights()
+                        # 必ず半精度に変換（linear_cross_entropy の要件）
+                        embeddings = embeddings.half()
+                        classifier = classifier.half()
+                        loss = linear_cross_entropy(embeddings, classifier, labels)
+                else:
+                    embeddings = self.model(input_ids)
                     classifier = self.model.get_classifier_weights()
-                    # 必ず半精度に変換（linear_cross_entropy の要件）
-                    embeddings = embeddings.half()
-                    classifier = classifier.half()
                     loss = linear_cross_entropy(embeddings, classifier, labels)
             else:
-                embeddings = self.model(input_ids)
-                classifier = self.model.get_classifier_weights()
-                loss = linear_cross_entropy(embeddings, classifier, labels)
-        else:
-            # 通常のCross Entropy用の処理
-            if self.scaler is not None:
-                with torch.cuda.amp.autocast():
-                    logits = self.model(input_ids)  # logitsが返される
+                # 通常のCross Entropy用の処理
+                if self.scaler is not None:
+                    with torch.cuda.amp.autocast():
+                        logits = self.model(input_ids)  # logitsが返される
+                        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                else:
+                    logits = self.model(input_ids)
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-            else:
-                logits = self.model(input_ids)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
 
-        # 勾配計算
-        loss.backward()
-        
+            # 勾配計算
+            loss.backward()
+            loss_item = loss.item()
+            
         # 勾配クリッピング（追加）
-        if hasattr(self, 'clip_value') and self.clip_value:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_value)
+        if hasattr(self.training_config, 'clip_value') and self.training_config.clip_value:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.training_config.clip_value)
         
         self.optimizer.step()
             
         # ログ
         if step % 5 == 0:
             compute_time = 0.0  # 実測したい場合は time計測をどうぞ
-            self.writer.add_scalar("MLM/Loss", loss.item(), step)
+            self.writer.add_scalar("MLM/Loss", loss_item, step)
             self.writer.add_scalar("MLM/ComputeTime(ms)", compute_time * 1000, step)
             if torch.cuda.is_available():
                 self.writer.add_scalar("System/GPU Memory (MB)", torch.cuda.memory_allocated()/1e6, step)
+                self.writer.add_scalar("System/GPU Memory Free (MB)", torch.cuda.get_device_properties(0).total_memory/1e6 - torch.cuda.memory_allocated()/1e6, step)
             est_flops = compute_flops_per_batch(self.model, input_ids.shape)
             self.writer.add_scalar("System/Estimated TFLOPS", est_flops/1e12/(compute_time+1e-9), step)
         
-        return loss.item()
+        return loss_item
 
     def train_diffusion(self, num_epochs: Optional[int] = None) -> None:
         """
