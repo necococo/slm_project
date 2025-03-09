@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, Union, Tuple, List, Callable
 import optuna
 import torch
 import numpy as np
+import math
 import matplotlib.pyplot as plt
 from datasets import load_dataset, load_from_disk, Dataset, DatasetDict
 from transformers import AutoTokenizer
@@ -58,7 +59,14 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
     
     # 訓練データと検証データを取得
     train_data = dataset['train']
-    valid_data = dataset['validation'] if 'validation' in dataset else dataset['test'] if 'test' in dataset else None
+    
+    # 検証データがあるか確認（様々な名前がある可能性）
+    valid_data = None
+    for key in ['validation', 'valid', 'test']:
+        if key in dataset:
+            valid_data = dataset[key]
+            print(f"検証データセットを '{key}' から読み込みました")
+            break
     
     if valid_data is None:
         # 検証データがない場合は訓練データの10%を使用
@@ -407,16 +415,16 @@ def objective(trial: optuna.trial.Trial,
         
         # MLM確率をトライアルパラメータから設定
         if 'mlm_probability' in trial.params:
-            model_config.mlm_probability = trial.params['mlm_probability']
+            training_config.mlm_probability = trial.params['mlm_probability']
         
+        # Trainerクラスの初期化パラメータに合わせて修正
         trainer = Trainer(
             model=model,
-            tokenizer=tokenizer,
-            train_dataloader=train_loader,
-            eval_dataloader=valid_loader,
-            device=device,
-            config=training_config,
-            paths_config=trial_paths
+            train_dataset=train_dataset,
+            valid_dataset=valid_dataset,
+            training_config=training_config,
+            paths_config=trial_paths,
+            device=device
         )
         
         # モデルのトレーニング（限定されたステップ数）
@@ -426,12 +434,14 @@ def objective(trial: optuna.trial.Trial,
         
         # 最大トレーニングステップ数を制限して早期評価
         max_steps = min(100, len(train_loader))
-        trainer.train(max_steps=max_steps)
+        # train_mlmメソッドを呼び出す（train()ではなく）
+        trainer.train_mlm(num_epochs=1)
         
         # 評価
-        eval_results = trainer.evaluate()
-        perplexity = eval_results.get('perplexity', float('inf'))
-        loss = eval_results.get('loss', float('inf'))
+        # Trainerクラスのvalidateメソッドを呼び出す
+        loss = trainer.validate()
+        # perplexity = math.exp(loss)  # 損失値からperplexityを計算
+        perplexity = float('inf') if loss > 20 else torch.exp(torch.tensor(loss)).item()
         
         # 進捗状況の報告
         logger.info(f"Trial {trial.number} 結果: Perplexity = {perplexity:.4f}, Loss = {loss:.4f}")
@@ -508,6 +518,9 @@ def load_and_prepare_dataset(paths_config: PathsConfig,
     else:
         logger.info("生データセットを読み込み、処理します...")
         full_dataset = load_dataset_from_disk_or_download(paths_config, base_config)
+    
+    # データセットの構造を出力（デバッグ用）
+    logger.info(f"データセット構造: {list(full_dataset.keys())}")
     
     # データセットのサブサンプリング
     return subsample_dataset(full_dataset, sample_size, sample_ratio)
@@ -620,8 +633,15 @@ def run_hyperparameter_search(
         paths_config, base_config, sample_size=None, sample_ratio=None
     )
     
+    # 検証データセットが存在するかチェック（validation, valid, testなど様々な名前がある可能性）
+    validation_key = None
+    for key in ['validation', 'valid', 'test']:
+        if key in dataset:
+            validation_key = key
+            break
+    
     logger.info(f"ロードされたデータセット: train={len(dataset['train'])}, "
-                f"validation={'validation' in dataset and len(dataset['validation']) or 'なし'}")
+                f"validation={validation_key and len(dataset[validation_key]) or 'なし'}")
     
     # 実際のサンプリングはprepare_data_for_trainingの中で実行される
     

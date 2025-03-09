@@ -99,7 +99,14 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
     
     # 訓練データと検証データを取得
     train_data = dataset['train']
-    valid_data = dataset['validation'] if 'validation' in dataset else dataset['test'] if 'test' in dataset else None
+    
+    # 検証データがあるか確認（様々な名前がある可能性）
+    valid_data = None
+    for key in ['validation', 'valid', 'test']:
+        if key in dataset:
+            valid_data = dataset[key]
+            print(f"検証データセットを '{key}' から読み込みました")
+            break
     
     if valid_data is None:
         # 検証データがない場合は訓練データの10%を使用
