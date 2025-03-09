@@ -29,7 +29,17 @@ sys.path.append(project_root)
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
-from slm.train import Trainer
+# トレーナーのインポート
+import importlib.util
+import sys
+
+# 明示的にトレーナーモジュールをロード
+trainer_module_path = os.path.join(project_root, 'slm', 'train.py')
+spec = importlib.util.spec_from_file_location("train_module", trainer_module_path)
+train_module = importlib.util.module_from_spec(spec)
+sys.modules["train_module"] = train_module
+spec.loader.exec_module(train_module)
+Trainer = train_module.Trainer
 
 from slm.training import (
     setup_environment,
@@ -38,7 +48,7 @@ from slm.training import (
 )
 
 # prepare_data_for_trainingを自前で実装（training.pyのものは使わない）
-def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, sample_size=None):
+def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, sample_size=None, training_config=None):
     """
     学習用のデータを準備する
     
@@ -48,6 +58,7 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
         model_config: モデル設定
         batch_size: バッチサイズ
         sample_size: データセットから使用するサンプル数（Noneの場合は全て使用）
+        training_config: トレーニング設定（MLM確率などを含む）
         
     Returns:
         訓練用データローダー、評価用データローダー、訓練用データセット、評価用データセット
@@ -97,34 +108,113 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
         
         print(f"データセットをサンプリング: 学習 {train_sample_size}サンプル, 検証 {valid_sample_size}サンプル")
     
+    # データセットを前処理（トークン化）
+    def preprocess_dataset(dataset):
+        from torch.utils.data import Dataset as TorchDataset
+        
+        # torch.utils.data.Subsetの場合、.map()メソッドがないので処理を変える
+        if isinstance(dataset, TorchDataset) and not hasattr(dataset, 'map'):
+            # torch.utils.data.Subsetの場合
+            original_dataset = dataset.dataset
+            indices = dataset.indices
+            processed_examples = []
+            
+            max_seq_len = model_config.max_seq_len
+            
+            for idx in indices:
+                item = original_dataset[idx]
+                
+                # text属性があるか確認
+                if hasattr(item, 'text') or (isinstance(item, dict) and 'text' in item):
+                    text = item.text if hasattr(item, 'text') else item['text']
+                    
+                    # トークン化
+                    encoded = tokenizer(
+                        text, 
+                        truncation=True,
+                        max_length=max_seq_len,
+                        padding='max_length',
+                        return_tensors='pt'
+                    )
+                    
+                    # スクイーズしてバッチ次元を削除
+                    for k, v in encoded.items():
+                        encoded[k] = v.squeeze(0)
+                        
+                    # テンソルをリストに変換（Collatorはリストを期待）
+                    encoded['input_ids'] = encoded['input_ids'].tolist()
+                    encoded['attention_mask'] = encoded['attention_mask'].tolist()
+                    
+                    processed_examples.append(encoded)
+                else:
+                    # 既に前処理されている場合はそのまま追加
+                    processed_examples.append(item)
+            
+            # 新しいデータセットを作成
+            from torch.utils.data import TensorDataset
+            
+            class SimpleDataset(TorchDataset):
+                def __init__(self, examples):
+                    self.examples = examples
+                
+                def __len__(self):
+                    return len(self.examples)
+                
+                def __getitem__(self, idx):
+                    return self.examples[idx]
+            
+            return SimpleDataset(processed_examples)
+        else:
+            # datasetsのDatasetオブジェクトの場合
+            # 'text'フィールドがあるか確認
+            if 'text' in dataset.features:
+                def tokenize_function(examples):
+                    return tokenizer(
+                        examples['text'],
+                        truncation=True,
+                        max_length=model_config.max_seq_len,
+                        padding='max_length'
+                    )
+                return dataset.map(tokenize_function, batched=True)
+            # 既に前処理されている場合は何もしない
+            return dataset
+    
+    # データセットの前処理
+    processed_train_data = preprocess_dataset(train_data)
+    processed_valid_data = preprocess_dataset(valid_data)
+    
     # カスタムコレーターの初期化
+    mlm_probability = 0.15  # デフォルト値
+    if training_config is not None and hasattr(training_config, 'mlm_probability'):
+        mlm_probability = training_config.mlm_probability
+    
     collator = CustomCollator(
         tokenizer=tokenizer,
         model_config=model_config,
         mlm=True,
-        mlm_probability=0.15,  # デフォルト値、後でトライアルパラメータで上書き
+        mlm_probability=mlm_probability,  # トライアルパラメータまたはデフォルト値
         mask_token_id=tokenizer.mask_token_id,
         qa=False
     )
     
     # データローダーの作成
     train_loader = DataLoader(
-        train_data,
+        processed_train_data,
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collator
     )
     
     valid_loader = DataLoader(
-        valid_data,
+        processed_valid_data,
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collator
     )
     
-    print(f"学習データ: {len(train_data)}サンプル, 検証データ: {len(valid_data)}サンプル")
+    print(f"学習データ: {len(processed_train_data)}サンプル, 検証データ: {len(processed_valid_data)}サンプル")
     
-    return train_loader, valid_loader, train_data, valid_data
+    return train_loader, valid_loader, processed_train_data, processed_valid_data
 
 # ロガーの設定
 logger = logging.getLogger(__name__)
@@ -392,13 +482,14 @@ def objective(trial: optuna.trial.Trial,
             trial, search_config, base_config, device
         )
         
-        # データの準備（サンプルサイズを指定）
+        # データの準備（サンプルサイズとMLM確率を指定）
         train_loader, valid_loader, train_dataset, valid_dataset = prepare_data_for_training(
             dataset, 
             tokenizer, 
             model_config, 
             batch_size=training_config.batch_size,
-            sample_size=search_config.sample_size
+            sample_size=search_config.sample_size,
+            training_config=training_config  # MLM確率を含むトレーニング設定を渡す
         )
         
         # トレーナーの初期化
@@ -416,6 +507,9 @@ def objective(trial: optuna.trial.Trial,
         # MLM確率をトライアルパラメータから設定
         if 'mlm_probability' in trial.params:
             training_config.mlm_probability = trial.params['mlm_probability']
+            
+        # トークナイザーをモデルの設定に追加（Trainerのtrain_mlmメソッドで必要）
+        model.config.tokenizer = tokenizer
         
         # Trainerクラスの初期化パラメータに合わせて修正
         trainer = Trainer(
@@ -439,9 +533,14 @@ def objective(trial: optuna.trial.Trial,
         
         # 評価
         # Trainerクラスのvalidateメソッドを呼び出す
-        loss = trainer.validate()
-        # perplexity = math.exp(loss)  # 損失値からperplexityを計算
-        perplexity = float('inf') if loss > 20 else torch.exp(torch.tensor(loss)).item()
+        try:
+            loss = trainer.validate()
+            # 損失値からperplexityを計算（損失値が非常に大きい場合は無限大とする）
+            perplexity = float('inf') if loss > 20 else torch.exp(torch.tensor(loss)).item()
+        except Exception as e:
+            logger.error(f"評価中にエラーが発生: {str(e)}")
+            loss = float('inf')
+            perplexity = float('inf')
         
         # 進捗状況の報告
         logger.info(f"Trial {trial.number} 結果: Perplexity = {perplexity:.4f}, Loss = {loss:.4f}")
