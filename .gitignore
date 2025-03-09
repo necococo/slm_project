@@ -6,6 +6,11 @@ __pycache__/
 .slm/
 .github
 .DS_Store
+.rooignore
 
 all_code_combined.txt
 copilot_code_style.md
+slm.code-workspace
+results/
+repo2txt.py
+requirements.txt

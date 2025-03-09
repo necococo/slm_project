@@ -1,4 +1,11 @@
-iniconfig==2.0.0
-packaging==24.2
-pluggy==1.5.0
-pytest==8.3.5
+sentencepiece
+pywavelets
+datasets
+huggingface_hub
+pytest
+cut-cross-entropy
+transformers
+bitsandbytes>=0.41.0,<0.42.0
+fugashi
+ipadic
+unidic-lite

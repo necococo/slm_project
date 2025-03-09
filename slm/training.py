@@ -12,7 +12,7 @@ from slm.config import ModelConfig
 from slm.config import TrainingConfig
 from slm.train import Trainer
 # 適切なインポートに修正
-from slm.modules.wave_network import WaveNetworkModel
+from slm.modules.wave_network import WaveNetworkLM
 # 分析機能を専用モジュールからインポート
 from slm.tools.analysis import extract_embeddings, visualize_embeddings
 
@@ -67,7 +67,7 @@ def setup_tokenizer_and_model(paths_config: PathsConfig, config):
     
     # Wave Networkモデルの初期化
     print(f"Wave Networkモデルを初期化しています...")
-    model = WaveNetworkModel(model_config)
+    model = WaveNetworkLM(model_config)
     
     return tokenizer, model, model_config
 
