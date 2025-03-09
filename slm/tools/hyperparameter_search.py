@@ -55,8 +55,13 @@ class HyperparameterSearchConfig:
         'dropout_prob': (0.0, 0.5),            # ドロップアウト率
         'learning_rate': (5e-6, 2e-4),         # 学習率
         'warmup_steps': (100, 1000),           # ウォームアップステップ数
-        'weight_decay': (0.0, 0.1),            # 重み減衰
+        'weight_decay': (1e-5, 0.1),           # 重み減衰 - 対数分布用
         'mlm_probability': (0.1, 0.25),        # MLMマスク確率
+    })
+    
+    # 整数パラメータの範囲
+    int_ranges: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
+        'num_layers': (2, 8),                  # Wave Networkのレイヤー数（2〜8層）
     })
     
     # カテゴリカルパラメータ
@@ -206,23 +211,28 @@ def create_model_from_params(trial: optuna.trial.Trial,
     """
     # ハイパーパラメータのサンプリング
     param_ranges = search_config.param_ranges
+    int_ranges = search_config.int_ranges
     categorical_params = search_config.categorical_params
     
+    # 連続パラメータのサンプリング
     complex_init_scale = trial.suggest_float('complex_init_scale', *param_ranges['complex_init_scale'], log=True)
-    dropout_prob = trial.suggest_float('dropout_prob', *param_ranges['dropout_prob'])
+    dropout_prob = trial.suggest_float('dropout_prob', *param_ranges['dropout_prob'])  # 対数スケールなし
     learning_rate = trial.suggest_float('learning_rate', *param_ranges['learning_rate'], log=True)
     warmup_steps = trial.suggest_int('warmup_steps', *param_ranges['warmup_steps'])
     weight_decay = trial.suggest_float('weight_decay', *param_ranges['weight_decay'], log=True)
-    mlm_probability = trial.suggest_float('mlm_probability', *param_ranges['mlm_probability'])
+    mlm_probability = trial.suggest_float('mlm_probability', *param_ranges['mlm_probability'])  # 対数スケールなし
+    
+    # 整数パラメータのサンプリング
+    num_layers = trial.suggest_int('num_layers', *int_ranges['num_layers'])
     
     # カテゴリカルパラメータ
     batch_size = trial.suggest_categorical('batch_size', categorical_params['batch_size'])
     clip_value = trial.suggest_categorical('clip_value', categorical_params['clip_value'])
     
-    # モデル設定の構築
+    # モデル設定の構築 - num_layersを含める
     model_config = ModelConfig(
         hidden_size=base_config.get('hidden_size', 768),
-        num_layers=base_config.get('num_layers', 3),
+        num_layers=num_layers,  # サンプリングされたレイヤー数を使用
         max_seq_len=base_config.get('max_seq_len', 512),
         dropout_prob=dropout_prob,
         use_rope=base_config.get('use_rope', True),
@@ -352,7 +362,7 @@ def load_base_config(config_file: Optional[str] = None) -> Dict[str, Any]:
     Returns:
         設定情報の辞書
     """
-    if config_file and os.path.exists(config_file):
+    if (config_file and os.path.exists(config_file)):
         with open(config_file, 'r') as f:
             return json.load(f)
     
