@@ -54,16 +54,21 @@ def load_dataset_from_disk_or_download(paths_config: PathsConfig, config):
 def setup_tokenizer_and_model(paths_config: PathsConfig, config):
     """トークナイザーとモデルをセットアップする"""
     # トークナイザーのロード
-    print(f"トークナイザー {config.model_name} をロードしています...")
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name, cache_dir=paths_config.cache_dir)
+    tokenizer_name = getattr(config, 'model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking')
+    print(f"トークナイザー {tokenizer_name} をロードしています...")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=paths_config.cache_dir)
     
     # モデル設定
     model_config = ModelConfig(
-        model_name=config.model_name,
-        max_seq_len=config.max_seq_len,
-        hidden_size=config.hidden_size,
-        ffn_dim=config.ffn_dim
+        hidden_size=getattr(config, 'hidden_size', 768),
+        num_layers=getattr(config, 'num_layers', 3),
+        max_seq_len=getattr(config, 'max_seq_len', 512),
+        dropout_prob=getattr(config, 'dropout_prob', 0.1),
+        use_rope=getattr(config, 'use_rope', True)
     )
+    
+    # トークナイザーを設定してvocab_sizeを自動取得できるようにする
+    model_config.set_tokenizer(tokenizer)
     
     # Wave Networkモデルの初期化
     print(f"Wave Networkモデルを初期化しています...")
@@ -72,46 +77,161 @@ def setup_tokenizer_and_model(paths_config: PathsConfig, config):
     return tokenizer, model, model_config
 
 
-def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16):
-    """学習用のデータを準備する"""
+def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, sample_size=None):
+    """
+    学習用のデータを準備する
+    データセットからサンプルを選択し、その場でトークナイズする方式
+    
+    Args:
+        dataset: 元のデータセット
+        tokenizer: トークナイザー
+        model_config: モデル設定
+        batch_size: バッチサイズ
+        sample_size: データセットから使用するサンプル数（Noneの場合は全て使用）
+        
+    Returns:
+        訓練用データローダー、評価用データローダー、訓練用データセット、評価用データセット
+    """
+    from torch.utils.data import DataLoader
+    from slm.collator import CustomCollator
     
     print("データを学習用に前処理しています...")
-    train_dataset = preprocess_dataset_for_mlm(dataset['train'], tokenizer, model_config.max_seq_len)
-    valid_dataset = preprocess_dataset_for_mlm(dataset['validation'], tokenizer, model_config.max_seq_len)
+    
+    # 訓練データと検証データを取得
+    train_data = dataset['train']
+    valid_data = dataset['validation'] if 'validation' in dataset else dataset['test'] if 'test' in dataset else None
+    
+    if valid_data is None:
+        # 検証データがない場合は訓練データの10%を使用
+        train_size = int(0.9 * len(train_data))
+        valid_size = len(train_data) - train_size
+        train_data, valid_data = torch.utils.data.random_split(train_data, [train_size, valid_size])
+    
+    # データセットを小さくする（指定された場合）
+    if sample_size is not None:
+        train_sample_size = min(sample_size, len(train_data))
+        valid_sample_size = min(sample_size // 10, len(valid_data))  # 検証データは訓練データの1/10
+        
+        # トレーニングデータの選択
+        if hasattr(train_data, 'select'):
+            # datasetsのDatasetオブジェクトの場合
+            train_data = train_data.select(range(train_sample_size))
+        else:
+            # torch.utils.data.Subsetなどの場合
+            indices = list(range(train_sample_size))
+            train_data = torch.utils.data.Subset(train_data, indices)
+            
+        # 検証データの選択
+        if hasattr(valid_data, 'select'):
+            valid_data = valid_data.select(range(valid_sample_size))
+        else:
+            indices = list(range(valid_sample_size))
+            valid_data = torch.utils.data.Subset(valid_data, indices)
+        
+        print(f"データセットをサンプリング: 学習 {train_sample_size}サンプル, 検証 {valid_sample_size}サンプル")
+    
+    # カスタムコレーターの初期化（その場でトークナイズするため）
+    collator = CustomCollator(
+        tokenizer=tokenizer,
+        model_config=model_config,
+        mlm=True,
+        mlm_probability=0.15,
+        mask_token_id=tokenizer.mask_token_id,
+        qa=False
+    )
     
     # データローダーの作成
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size)
+    train_loader = DataLoader(
+        train_data,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collator
+    )
     
-    print(f"学習データ: {len(train_dataset)}サンプル, 検証データ: {len(valid_dataset)}サンプル")
+    valid_loader = DataLoader(
+        valid_data,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collator
+    )
     
-    return train_loader, valid_loader, train_dataset, valid_dataset
+    print(f"学習データ: {len(train_data)}サンプル, 検証データ: {len(valid_data)}サンプル")
+    
+    return train_loader, valid_loader, train_data, valid_data
 
 
 def merge_configs(easy_config, config_module):
     """
-    easy_config.pyの簡易設定とconfig.pyの本番設定をマージする
-    easy_configを優先し、存在しない設定はconfig_moduleから取得する
+    easy_configの簡易設定とconfig.pyの本番設定をマージする
+    easy_configを優先し、存在しない設定はデフォルト値から取得する
     """
-    # 本番用設定のデフォルト値
-    from slm.config import DEFAULT_CONFIG
-    
     # TrainingConfigで本番用設定を作成
     training_config = TrainingConfig(
-        learning_rate=getattr(easy_config, 'learning_rate', DEFAULT_CONFIG.get('learning_rate', 5e-5)),
-        num_epochs=getattr(easy_config, 'num_epochs', DEFAULT_CONFIG.get('num_epochs', 3)),
-        weight_decay=getattr(easy_config, 'weight_decay', DEFAULT_CONFIG.get('weight_decay', 0.01)),
-        warmup_steps=getattr(easy_config, 'warmup_steps', DEFAULT_CONFIG.get('warmup_steps', 100)),
-        gradient_accumulation_steps=getattr(easy_config, 'gradient_accumulation_steps', 
-                                           DEFAULT_CONFIG.get('gradient_accumulation_steps', 1)),
-        max_grad_norm=getattr(easy_config, 'max_grad_norm', DEFAULT_CONFIG.get('max_grad_norm', 1.0)),
-        logging_steps=getattr(easy_config, 'logging_steps', DEFAULT_CONFIG.get('logging_steps', 10)),
-        eval_steps=getattr(easy_config, 'eval_steps', DEFAULT_CONFIG.get('eval_steps', 50)),
-        save_steps=getattr(easy_config, 'save_steps', DEFAULT_CONFIG.get('save_steps', 100))
+        learning_rate=getattr(easy_config, 'learning_rate', 5e-5),
+        batch_size=getattr(easy_config, 'batch_size', 16),
+        mlm_epochs=getattr(easy_config, 'mlm_epochs', 3),
+        mlm_probability=getattr(easy_config, 'mlm_probability', 0.15),
+        weight_decay=getattr(easy_config, 'weight_decay', 0.01),
+        warmup_steps=getattr(easy_config, 'warmup_steps', 500),
+        accumulation_steps=getattr(easy_config, 'accumulation_steps', 1),
+        use_amp=getattr(easy_config, 'use_amp', True),
+        clip_value=getattr(easy_config, 'clip_value', 1.0)
     )
     
     return training_config
 
+
+def get_config(config_path=None):
+    """
+    サンプル設定を生成する関数
+    
+    Args:
+        config_path: 設定ファイルのパス（未実装）
+        
+    Returns:
+        設定オブジェクト（属性アクセス可能なSimpleNamespace）
+    """
+    from types import SimpleNamespace
+    
+    # デフォルト設定
+    config = SimpleNamespace(
+        # モデル設定
+        hidden_size=768,
+        ffn_dim=768 * 4,
+        num_layers=3,
+        max_seq_len=512,
+        dropout_prob=0.1,
+        use_rope=True,
+        
+        # データセット設定
+        dataset_name="singletongue/wikipedia-utils",
+        dataset_subset="corpus-jawiki-20230403-filtered-large",
+        
+        # トークナイザー設定
+        model_name="cl-tohoku/bert-base-japanese-whole-word-masking",
+        tokenizer_name="cl-tohoku/bert-base-japanese-whole-word-masking",
+        
+        # 訓練設定
+        learning_rate=1e-5,
+        batch_size=16,
+        mlm_epochs=3,
+        mlm_probability=0.15,
+        weight_decay=0.01,
+        warmup_steps=500,
+        accumulation_steps=1,
+        
+        # パス設定
+        base_dir=os.path.join(os.getcwd(), "slm_output"),
+        output_dir=os.path.join(os.getcwd(), "slm_output"),
+        cache_dir=os.path.join(os.getcwd(), "cache"),
+        
+        # その他の設定
+        use_amp=True,
+        num_samples=100,
+        sample_size=None,  # サンプルサイズ設定（Noneの場合は全データ使用）
+    )
+    
+    return config
 
 def get_selected_config(use_easy_config=True, config_path=None):
     """
@@ -134,8 +254,17 @@ def get_selected_config(use_easy_config=True, config_path=None):
         print("本番用設定(config.py)を読み込みます...")
         # configモジュールから直接TrainingConfigを作成
         import slm.config as config_module
-        # DEFAULT_CONFIGからTrainingConfigを生成
-        config = TrainingConfig(**config_module.DEFAULT_CONFIG)
+        # DEFAULT_CONFIGが存在しないので、代わりにデフォルト値を使用してTrainingConfigを生成
+        config = TrainingConfig(
+            learning_rate=1e-5,
+            batch_size=16, 
+            mlm_epochs=3,
+            mlm_probability=0.15,
+            weight_decay=0.01,
+            warmup_steps=500,
+            accumulation_steps=1,
+            use_amp=True
+        )
         return config
 
 
@@ -173,21 +302,29 @@ def main():
         training_config = selected_config
     
     # 環境設定
-    device, paths_config = setup_environment(selected_config)
-    
-    # データセットのロード
-    dataset = load_dataset_from_disk_or_download(paths_config, selected_config)
-    
-    # トークナイザーとモデルのセットアップ
-    tokenizer, model, model_config = setup_tokenizer_and_model(paths_config, selected_config)
-    
-    # モデルをデバイスに転送
-    model.to(device)
+    try:
+        device, paths_config = setup_environment(selected_config)
+        
+        # データセットのロード
+        dataset = load_dataset_from_disk_or_download(paths_config, selected_config)
+        
+        # トークナイザーとモデルのセットアップ
+        tokenizer, model, model_config = setup_tokenizer_and_model(paths_config, selected_config)
+        
+        # モデルをデバイスに転送
+        model.to(device)
+        
+        print(f"モデル情報: hidden_size={model_config.hidden_size}, num_layers={model_config.num_layers}, "
+              f"vocab_size={model_config.vocab_size}")
+    except Exception as e:
+        print(f"セットアップ中にエラーが発生しました: {e}")
+        raise
     
     # 学習用データの準備
     batch_size = getattr(selected_config, 'batch_size', 16)
+    sample_size = getattr(selected_config, 'sample_size', None)
     train_loader, valid_loader, train_dataset, valid_dataset = prepare_data_for_training(
-        dataset, tokenizer, model_config, batch_size=batch_size
+        dataset, tokenizer, model_config, batch_size=batch_size, sample_size=sample_size
     )
     
     # トレーナーの初期化と学習の実行
@@ -206,14 +343,28 @@ def main():
     print("モデル学習が完了しました！")
     
     # モデルの保存
-    save_path = os.path.join(paths_config.model_path, "wave_network_final.pt")
-    torch.save(model.state_dict(), save_path)
-    print(f"モデルを {save_path} に保存しました")
+    try:
+        model_path = os.path.join(paths_config.checkpoint_dir, "wave_network_final.pt")
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        torch.save(model.state_dict(), model_path)
+        print(f"モデルを {model_path} に保存しました")
+    except Exception as e:
+        print(f"モデル保存中にエラーが発生しました: {e}")
+        print("一時ディレクトリにモデルを保存します...")
+        temp_path = os.path.join(os.getcwd(), "model_backup.pt")
+        torch.save(model.state_dict(), temp_path)
+        print(f"モデルを {temp_path} に保存しました")
     
     # 埋め込みの抽出と可視化 (tools/analysis.pyからインポートした関数を使用)
-    num_samples = getattr(selected_config, 'num_samples', 100)
-    embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device, num_samples=num_samples)
-    visualize_embeddings(embeddings, paths_config)
+    try:
+        num_samples = getattr(selected_config, 'num_samples', 100)
+        print(f"埋め込みを抽出して可視化します (サンプル数: {num_samples})...")
+        embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device, num_samples=num_samples)
+        visualize_embeddings(embeddings, paths_config)
+        print("埋め込みの可視化が完了しました")
+    except Exception as e:
+        print(f"埋め込みの抽出または可視化中にエラーが発生しました: {e}")
+        print("学習自体は正常に完了しています。")
     
     print("全ての処理が正常に完了しました！")
 

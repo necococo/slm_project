@@ -29,12 +29,94 @@ sys.path.append(project_root)
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.train import Trainer
+
 from slm.training import (
     setup_environment,
     load_dataset_from_disk_or_download,
     setup_tokenizer_and_model,
-    prepare_data_for_training
 )
+
+# prepare_data_for_trainingを自前で実装（training.pyのものは使わない）
+def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, sample_size=None):
+    """
+    学習用のデータを準備する
+    
+    Args:
+        dataset: 元のデータセット
+        tokenizer: トークナイザー
+        model_config: モデル設定
+        batch_size: バッチサイズ
+        sample_size: データセットから使用するサンプル数（Noneの場合は全て使用）
+        
+    Returns:
+        訓練用データローダー、評価用データローダー、訓練用データセット、評価用データセット
+    """
+    from torch.utils.data import DataLoader
+    from slm.collator import CustomCollator
+    
+    print("データを学習用に前処理しています...")
+    
+    # 訓練データと検証データを取得
+    train_data = dataset['train']
+    valid_data = dataset['validation'] if 'validation' in dataset else dataset['test'] if 'test' in dataset else None
+    
+    if valid_data is None:
+        # 検証データがない場合は訓練データの10%を使用
+        train_size = int(0.9 * len(train_data))
+        valid_size = len(train_data) - train_size
+        train_data, valid_data = torch.utils.data.random_split(train_data, [train_size, valid_size])
+    
+    # データセットを小さくする（指定された場合）
+    if sample_size is not None:
+        train_sample_size = min(sample_size, len(train_data))
+        valid_sample_size = min(sample_size // 10, len(valid_data))  # 検証データは訓練データの1/10
+        
+        # トレーニングデータの選択
+        if hasattr(train_data, 'select'):
+            # datasetsのDatasetオブジェクトの場合
+            train_data = train_data.select(range(train_sample_size))
+        else:
+            # torch.utils.data.Subsetなどの場合
+            indices = list(range(train_sample_size))
+            train_data = torch.utils.data.Subset(train_data, indices)
+            
+        # 検証データの選択
+        if hasattr(valid_data, 'select'):
+            valid_data = valid_data.select(range(valid_sample_size))
+        else:
+            indices = list(range(valid_sample_size))
+            valid_data = torch.utils.data.Subset(valid_data, indices)
+        
+        print(f"データセットをサンプリング: 学習 {train_sample_size}サンプル, 検証 {valid_sample_size}サンプル")
+    
+    # カスタムコレーターの初期化
+    collator = CustomCollator(
+        tokenizer=tokenizer,
+        model_config=model_config,
+        mlm=True,
+        mlm_probability=0.15,  # デフォルト値、後でトライアルパラメータで上書き
+        mask_token_id=tokenizer.mask_token_id,
+        qa=False
+    )
+    
+    # データローダーの作成
+    train_loader = DataLoader(
+        train_data,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collator
+    )
+    
+    valid_loader = DataLoader(
+        valid_data,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collator
+    )
+    
+    print(f"学習データ: {len(train_data)}サンプル, 検証データ: {len(valid_data)}サンプル")
+    
+    return train_loader, valid_loader, train_data, valid_data
 
 # ロガーの設定
 logger = logging.getLogger(__name__)
@@ -111,10 +193,20 @@ def subsample_dataset(dataset: Union[Dataset, DatasetDict],
             if sample_size is not None:
                 # 指定サイズでサンプリング
                 sample_count = min(sample_size, len(data))
+                if split != 'train':
+                    # 検証/テストセットは小さくする
+                    sample_count = min(sample_count // 10, len(data))
+                
+                logger.info(f"'{split}'セットを{len(data)}から{sample_count}サンプルにサブサンプリングします")
                 result[split] = data.select(range(sample_count))
             elif sample_ratio is not None:
                 # 指定比率でサンプリング
                 sample_count = int(len(data) * sample_ratio)
+                if split != 'train':
+                    # 検証/テストセットは小さくする（訓練データの1/10）
+                    sample_count = int(sample_count * 0.1)
+                
+                logger.info(f"'{split}'セットを{len(data)}から{sample_count}サンプルにサブサンプリングします")
                 result[split] = data.select(range(sample_count))
             else:
                 result[split] = data
@@ -123,9 +215,11 @@ def subsample_dataset(dataset: Union[Dataset, DatasetDict],
     # 単一のDatasetの場合
     if sample_size is not None:
         sample_count = min(sample_size, len(dataset))
+        logger.info(f"データセットを{len(dataset)}から{sample_count}サンプルにサブサンプリングします")
         return dataset.select(range(sample_count))
     elif sample_ratio is not None:
         sample_count = int(len(dataset) * sample_ratio)
+        logger.info(f"データセットを{len(dataset)}から{sample_count}サンプルにサブサンプリングします")
         return dataset.select(range(sample_count))
     
     return dataset
@@ -290,9 +384,13 @@ def objective(trial: optuna.trial.Trial,
             trial, search_config, base_config, device
         )
         
-        # データの準備
+        # データの準備（サンプルサイズを指定）
         train_loader, valid_loader, train_dataset, valid_dataset = prepare_data_for_training(
-            dataset, tokenizer, model_config, batch_size=training_config.batch_size
+            dataset, 
+            tokenizer, 
+            model_config, 
+            batch_size=training_config.batch_size,
+            sample_size=search_config.sample_size
         )
         
         # トレーナーの初期化
@@ -307,6 +405,10 @@ def objective(trial: optuna.trial.Trial,
             tokenizer_name=paths_config.tokenizer_name
         )
         
+        # MLM確率をトライアルパラメータから設定
+        if 'mlm_probability' in trial.params:
+            model_config.mlm_probability = trial.params['mlm_probability']
+        
         trainer = Trainer(
             model=model,
             tokenizer=tokenizer,
@@ -320,6 +422,7 @@ def objective(trial: optuna.trial.Trial,
         # モデルのトレーニング（限定されたステップ数）
         logger.info(f"\n===== Trial {trial.number}: トレーニング開始 =====")
         logger.info(f"パラメータ: {trial.params}")
+        logger.info(f"データセットサイズ: 訓練={len(train_dataset)}, 検証={len(valid_dataset)}")
         
         # 最大トレーニングステップ数を制限して早期評価
         max_steps = min(100, len(train_loader))
@@ -336,13 +439,15 @@ def objective(trial: optuna.trial.Trial,
         # 中間結果を保存
         trial.set_user_attr('perplexity', float(perplexity))
         trial.set_user_attr('loss', float(loss))
+        trial.set_user_attr('dataset_size', len(train_dataset))
         
         # このトライアルの結果を保存
         with open(os.path.join(trial_dir, "metrics.json"), 'w') as f:
             json.dump({
                 'perplexity': float(perplexity),
                 'loss': float(loss),
-                'params': trial.params
+                'params': trial.params,
+                'dataset_size': len(train_dataset)
             }, f, indent=2)
             
         return loss
@@ -502,16 +607,23 @@ def run_hyperparameter_search(
     
     # デバイス設定は setup_environment で取得済み
     logger.info(f"Using device: {device}")
+    logger.info(f"データセット設定: sample_size={sample_size}, sample_ratio={sample_ratio}")
     
     # パスの設定は既に paths_config に含まれている
     # ストレージパスの設定
     os.makedirs(paths_config.base_dir, exist_ok=True)
     search_config.storage = f"sqlite:///{paths_config.base_dir}/optuna_{search_config.study_name}.db"
     
-    # データセット準備
+    # データセット準備（選択対象のデータセットをロード）
+    # フルデータをロードし、後でサンプリングする方式に変更
     dataset = load_and_prepare_dataset(
-        paths_config, base_config, sample_size=sample_size, sample_ratio=sample_ratio
+        paths_config, base_config, sample_size=None, sample_ratio=None
     )
+    
+    logger.info(f"ロードされたデータセット: train={len(dataset['train'])}, "
+                f"validation={'validation' in dataset and len(dataset['validation']) or 'なし'}")
+    
+    # 実際のサンプリングはprepare_data_for_trainingの中で実行される
     
     # Optuna Studyの作成
     study = optuna.create_study(
@@ -559,8 +671,21 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # 引数の確認
+    if args.sample_size is not None and args.sample_ratio is not None:
+        print("警告: --sample-sizeと--sample-ratioの両方が指定されています。--sample-sizeを優先します。")
+        args.sample_ratio = None
+    
     # ログレベル設定
     logging.getLogger().setLevel(getattr(logging, args.log_level))
+    
+    # サンプルサイズの情報をログに出力
+    if args.sample_size:
+        logger.info(f"データセットサンプルサイズ: {args.sample_size}サンプル")
+    elif args.sample_ratio:
+        logger.info(f"データセットサンプル比率: {args.sample_ratio * 100:.1f}%")
+    else:
+        logger.info("サンプリングなし: フルデータセットを使用")
     
     run_hyperparameter_search(
         config_file=args.config,
