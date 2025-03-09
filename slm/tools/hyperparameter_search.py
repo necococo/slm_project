@@ -651,8 +651,19 @@ def objective(trial: optuna.trial.Trial,
         # trainer.train_mlm(num_epochs=1)
         
         # Diffusion学習を実行
-        training_config.diffusion_epochs = 2  # 探索では短いエポック数で実行
-        trainer.train_diffusion(num_epochs=2)
+        try:
+            print("\n----- 詳細なデバッグ情報 -----")
+            print(f"モデル構造: {trainer.model}")
+            print(f"データセットサイズ: {len(trainer.train_dataset)}")
+            print(f"バッチサイズ: {training_config.batch_size}")
+            
+            # 十分な安全マージンを取ってエポック数を1に制限
+            training_config.diffusion_epochs = 1
+            trainer.train_diffusion(num_epochs=1)
+        except Exception as e:
+            print(f"Diffusion学習中にエラーが発生: {e}")
+            # エラー発生時も評価だけは試行
+            return 100.0  # 高い損失値を返す
         
         # 評価
         # Trainerクラスのvalidateメソッドを呼び出す

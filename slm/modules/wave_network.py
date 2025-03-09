@@ -363,6 +363,7 @@ class WaveletEnhancedNetworkBlock(nn.Module):
         )
         
         expansion_factor = 2
+        
         self.ffn = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size * expansion_factor),
             nn.GELU(),
@@ -402,8 +403,8 @@ class WaveletEnhancedNetworkBlock(nn.Module):
         # 1. ウェーブレット強化Wave Layer処理
         wave_output = self.wave_layer(wave_input)  # [B, S, D]
         
-        # FNN層を通す
-        wave_output = self.fnn(wave_output)  # [B, S, D]
+        # FFN層を通す
+        wave_output = self.ffn(wave_output)  # [B, S, D]
         
         # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
         output = self.dropout(x + wave_output)
