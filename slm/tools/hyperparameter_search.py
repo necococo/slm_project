@@ -418,8 +418,11 @@ def run_hyperparameter_search(
     """
     logger.info("Wave Network モデルのハイパーパラメータ探索を開始します")
     
+    # 基本設定の読み込み
+    base_config = load_base_config(config_file)
+    
     # 環境設定
-    setup_environment()
+    device, paths_config = setup_environment(base_config)
     
     # 探索設定の作成
     search_config = HyperparameterSearchConfig(
@@ -430,21 +433,10 @@ def run_hyperparameter_search(
         sample_ratio=sample_ratio
     )
     
-    # 基本設定の読み込み
-    base_config = load_base_config(config_file)
-    
-    # デバイス設定
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # デバイス設定は setup_environment で取得済み
     logger.info(f"Using device: {device}")
     
-    # パス設定
-    paths_config = PathsConfig(
-        base_dir=base_config.get('base_dir', '/tmp/wave_network_optuna'),
-        dataset_name=base_config.get('dataset_name', 'singletongue/wikipedia-utils'),
-        dataset_subset=base_config.get('dataset_subset', 'corpus-jawiki-20230403-filtered-large'),
-        tokenizer_name=base_config.get('model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking')
-    )
-    
+    # パスの設定は既に paths_config に含まれている
     # ストレージパスの設定
     os.makedirs(paths_config.base_dir, exist_ok=True)
     search_config.storage = f"sqlite:///{paths_config.base_dir}/optuna_{search_config.study_name}.db"
