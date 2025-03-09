@@ -10,7 +10,7 @@ import torch.nn.functional as F  # F.cross_entropy用に追加
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, Any, List
 from cut_cross_entropy import linear_cross_entropy
 
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
@@ -184,6 +184,9 @@ class Trainer:
             # バッチを分割
             num_micro_batches = (batch_size + max_micro_batch - 1) // max_micro_batch
             total_loss = 0.0
+            
+            # 入力と出力のチェック
+            print(f"入力形状: {input_ids.shape}, ラベル形状: {labels.shape}")
             
             for i in range(num_micro_batches):
                 start_idx = i * max_micro_batch

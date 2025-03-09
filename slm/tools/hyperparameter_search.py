@@ -136,31 +136,37 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
             for idx in indices:
                 item = original_dataset[idx]
                 
-                # text属性があるか確認
+                # データセットの構造を確認してテキストを抽出
                 if hasattr(item, 'text') or (isinstance(item, dict) and 'text' in item):
                     text = item.text if hasattr(item, 'text') else item['text']
-                    
-                    # トークン化
-                    encoded = tokenizer(
-                        text, 
-                        truncation=True,
-                        max_length=max_seq_len,
-                        padding='max_length',
-                        return_tensors='pt'
-                    )
-                    
-                    # スクイーズしてバッチ次元を削除
-                    for k, v in encoded.items():
-                        encoded[k] = v.squeeze(0)
-                        
-                    # テンソルをリストに変換（Collatorはリストを期待）
-                    encoded['input_ids'] = encoded['input_ids'].tolist()
-                    encoded['attention_mask'] = encoded['attention_mask'].tolist()
-                    
-                    processed_examples.append(encoded)
+                elif hasattr(item, 'description') or (isinstance(item, dict) and 'description' in item):
+                    # ag_news用 - descriptionフィールドを使用
+                    desc = item.description if hasattr(item, 'description') else item['description']
+                    title = item.title if hasattr(item, 'title') else item.get('title', '')
+                    text = title + " " + desc if title else desc
                 else:
-                    # 既に前処理されている場合はそのまま追加
-                    processed_examples.append(item)
+                    # フィールドが見つからない場合
+                    print(f"警告: サンプル {idx} にテキストフィールドが見つかりません。スキップします。")
+                    continue
+                    
+                # トークン化
+                encoded = tokenizer(
+                    text, 
+                    truncation=True,
+                    max_length=max_seq_len,
+                    padding='max_length',
+                    return_tensors='pt'
+                )
+                
+                # スクイーズしてバッチ次元を削除
+                for k, v in encoded.items():
+                    encoded[k] = v.squeeze(0)
+                    
+                # テンソルをリストに変換（Collatorはリストを期待）
+                encoded['input_ids'] = encoded['input_ids'].tolist()
+                encoded['attention_mask'] = encoded['attention_mask'].tolist()
+                
+                processed_examples.append(encoded)
             
             # 新しいデータセットを作成
             from torch.utils.data import TensorDataset
@@ -178,11 +184,31 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
             return SimpleDataset(processed_examples)
         else:
             # datasetsのDatasetオブジェクトの場合
-            # 'text'フィールドがあるか確認
+            # データセットの構造をチェック
+            print(f"データセット特徴量: {dataset.features}")
+            
+            # ag_newsの場合
             if 'text' in dataset.features:
                 def tokenize_function(examples):
                     return tokenizer(
                         examples['text'],
+                        truncation=True,
+                        max_length=model_config.max_seq_len,
+                        padding='max_length'
+                    )
+                return dataset.map(tokenize_function, batched=True)
+            elif 'description' in dataset.features:
+                # ag_news用
+                def tokenize_function(examples):
+                    # タイトルと説明を結合
+                    texts = []
+                    for i in range(len(examples['description'])):
+                        title = examples['title'][i] if 'title' in examples else ""
+                        desc = examples['description'][i]
+                        texts.append(title + " " + desc if title else desc)
+                    
+                    return tokenizer(
+                        texts,
                         truncation=True,
                         max_length=model_config.max_seq_len,
                         padding='max_length'
@@ -774,8 +800,8 @@ def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # 必須とデフォルト値のマッピング
     required_keys = {
-        'dataset_name': 'wikitext',
-        'dataset_subset': 'wikitext-2-raw-v1',  # 小さいデータセットで開始
+        'dataset_name': 'ag_news',  # より質の高いニュースデータセット
+        'dataset_subset': None,  # サブセットなし
         'model_name': 'bert-base-uncased',  # 英語用のBERTモデル
         'tokenizer_name': config.get('model_name', 'bert-base-uncased'),  # 英語用のトークナイザー
         'base_dir': results_path,  # Google Drive上のパスに変更

@@ -233,8 +233,8 @@ def get_config(config_path=None):
         use_rope=True,
         
         # データセット設定
-        dataset_name="wikitext",
-        dataset_subset="wikitext-2-raw-v1",  # 小さいデータセットで開始
+        dataset_name="ag_news",  # 高品質なニュースデータセット
+        dataset_subset=None,  # サブセットなし
         
         # トークナイザー設定
         model_name="bert-base-uncased",  # 英語用のBERTモデル
