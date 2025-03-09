@@ -31,15 +31,17 @@ class ModelConfig:
         max_seq_len: int = 512,
         dropout_prob: float = 0.2,
         use_rope: bool = True,
-        use_wavelet: bool = False,
-        wavelet_name: Optional[str] = None,
+        # ウェーブレット関連
+        use_wavelet: bool = True,  # ハイパラ探索結果と組み合わせるためTrueをデフォルトに変更
+        wavelet_name: str = "haar",  # haarウェーブレットをデフォルトに
+        # スタイル
         norm_scheme: str = "post",  # 追加: 'pre'または'post'のLayerNorm方式を選択
         activation: str = "gelu",   # 追加: 活性化関数の選択
         complex_init_scale: float = 0.02,  # 追加: 複素数初期化のスケール
-        # 生体ゆらぎゲート機構の設定
-        use_bio_noise: bool = True,  # 生体ゆらぎを使用するかどうか
-        noise_std: float = 0.1,      # 生体ゆらぎの標準偏差（強度）
-        trainable_noise: bool = True, # ノイズスケールを学習可能にするかどうか
+        # 生体ゆらぎゲート機構の設定 (ハイパラ探索の最適値)
+        use_bio_noise: bool = True,       # 生体ゆらぎを使用する (最適値)
+        noise_std: float = 0.09377424894583282,  # 生体ゆらぎの標準偏差（最適値）
+        trainable_noise: bool = False,    # ノイズスケールを固定（最適値）
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -58,7 +60,10 @@ class ModelConfig:
         self.use_bio_noise = use_bio_noise
         self.noise_std = noise_std
         self.trainable_noise = trainable_noise
-        self.complex_init_scale = complex_init_scale  # 追加: 複素数初期化スケール
+        
+        # ウェーブレット関連の設定
+        self.use_wavelet = use_wavelet
+        self.wavelet_name = wavelet_name
     
     @property
     def vocab_size(self) -> int:

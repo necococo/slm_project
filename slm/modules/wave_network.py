@@ -187,29 +187,42 @@ class BiologicalNoiseGate(nn.Module):
         
         return gate
 
-class SingleWaveLayer(nn.Module):
+class WaveletEnhancedWaveLayer(nn.Module):
     """
-    生体ゆらぎを組み込んだWave Network Layer の拡張実装
-    基本的な構造はFig.6(a)に基づきつつ、生体ゆらぎゲート機構を追加
+    ウェーブレット変換と生体ゆらぎを組み合わせたWave Layer実装
+    - 生体ゆらぎゲート機構により動的な重み付けを行う
+    - Haarウェーブレット変換により低周波成分（approximation）のみを使用する
     """
-    def __init__(self, hidden_size: int, dropout_prob: float = 0.1, 
-                 noise_std: float = 0.1, use_bio_noise: bool = True, 
-                 trainable_noise: bool = True):
+    def __init__(
+        self, 
+        hidden_size: int, 
+        dropout_prob: float = 0.1, 
+        noise_std: float = 0.1, 
+        use_bio_noise: bool = True, 
+        trainable_noise: bool = False,  # ハイパラ探索の最適値
+        use_wavelet: bool = True,
+        wavelet_name: str = "haar"
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         self.use_bio_noise = use_bio_noise
+        self.use_wavelet = use_wavelet
+        self.wavelet_name = wavelet_name
         
+        # FFN拡張係数
         expansion_factor = 4
+        
+        # 実部・虚部それぞれのFFN
         self.ffn_real = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * expansion_factor),
             nn.GELU(),
-            nn.Dropout(dropout_prob),  # ドロップアウトを追加
+            nn.Dropout(dropout_prob),
             nn.Linear(hidden_size * expansion_factor, hidden_size)
         )
         self.ffn_imag = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * expansion_factor),
             nn.GELU(),
-            nn.Dropout(dropout_prob),  # ドロップアウトを追加
+            nn.Dropout(dropout_prob),
             nn.Linear(hidden_size * expansion_factor, hidden_size)
         )
         
@@ -226,17 +239,7 @@ class SingleWaveLayer(nn.Module):
             )
         
     def compute_amplitude_phase(self, real_part: torch.Tensor, imag_part: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        実部と虚部から振幅と位相を計算
-        
-        Args:
-            real_part: 実部 [B, S, D]
-            imag_part: 虚部 [B, S, D]
-            
-        Returns:
-            amplitude: 振幅 [B, S, D]
-            phase: 位相 [B, S, D]
-        """
+        """実部と虚部から振幅と位相を計算"""
         # 振幅 = √(実部² + 虚部²)
         amplitude = torch.sqrt(real_part**2 + imag_part**2 + 1e-5)
         
@@ -247,7 +250,7 @@ class SingleWaveLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        生体ゆらぎを組み込んだWave Layer forward pass
+        ウェーブレットと生体ゆらぎを組み合わせたWave Layer forward pass
         
         Args:
             x: 入力テンソル [B, S, D]
@@ -271,6 +274,13 @@ class SingleWaveLayer(nn.Module):
         # 波の干渉（加算）
         combined_real = real_sen + real_token
         combined_imag = imag_sen + imag_token
+        
+        # ウェーブレット変換を適用（低周波成分のみを使用）
+        if self.use_wavelet:
+            from slm.modules.wavelet import apply_wavelet_transform
+            combined_real, combined_imag = apply_wavelet_transform(
+                combined_real, combined_imag, wavelet_name=self.wavelet_name
+            )
         
         # 生体ゆらぎゲート機構を使用する場合
         if self.use_bio_noise:
@@ -301,9 +311,27 @@ class SingleWaveLayer(nn.Module):
 
         return output
 
-class WaveNetworkBlock(nn.Module):
+# オリジナルの SingleWaveLayer クラスを保持（互換性のため）
+class SingleWaveLayer(WaveletEnhancedWaveLayer):
     """
-    生体ゆらぎ機能を統合したWave Network Block の実装
+    生体ゆらぎを組み込んだWave Network Layer の拡張実装
+    基本的な構造はFig.6(a)に基づきつつ、生体ゆらぎゲート機構を追加
+    """
+    def __init__(self, hidden_size: int, dropout_prob: float = 0.1, 
+                 noise_std: float = 0.1, use_bio_noise: bool = True, 
+                 trainable_noise: bool = True):
+        super().__init__(
+            hidden_size=hidden_size,
+            dropout_prob=dropout_prob,
+            noise_std=noise_std,
+            use_bio_noise=use_bio_noise,
+            trainable_noise=trainable_noise,
+            use_wavelet=False  # デフォルトではウェーブレットを使用しない
+        )
+
+class WaveletEnhancedNetworkBlock(nn.Module):
+    """
+    ウェーブレット変換と生体ゆらぎを組み合わせたWave Network Block
     """
     def __init__(
         self, 
@@ -313,20 +341,25 @@ class WaveNetworkBlock(nn.Module):
         max_seq_len: int = 2048,
         noise_std: float = 0.1,
         use_bio_noise: bool = True,
-        trainable_noise: bool = True
+        trainable_noise: bool = False,  # ハイパラ探索の最適値
+        use_wavelet: bool = True,
+        wavelet_name: str = "haar"
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.use_rope = use_rope
         self.use_bio_noise = use_bio_noise
+        self.use_wavelet = use_wavelet
         
-        # Wave Layer - 生体ゆらぎゲート機構を含む拡張バージョン
-        self.wave_layer = SingleWaveLayer(
+        # ウェーブレット強化Wave Layer 
+        self.wave_layer = WaveletEnhancedWaveLayer(
             hidden_size=hidden_size, 
             dropout_prob=dropout_prob,
             noise_std=noise_std,
             use_bio_noise=use_bio_noise,
-            trainable_noise=trainable_noise
+            trainable_noise=trainable_noise,
+            use_wavelet=use_wavelet,
+            wavelet_name=wavelet_name
         )
         
         # RoPE (オプション)
@@ -341,7 +374,7 @@ class WaveNetworkBlock(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        生体ゆらぎを組み込んだWave Network Block forward pass
+        ウェーブレットと生体ゆらぎを組み込んだWave Network Block forward pass
         
         Args:
             x: 入力テンソル [B, S, D]
@@ -358,7 +391,7 @@ class WaveNetworkBlock(nn.Module):
         else:
             wave_input = x
         
-        # 1. 拡張Wave Layer処理（生体ゆらぎゲート機構を含む）
+        # 1. ウェーブレット強化Wave Layer処理
         wave_output = self.wave_layer(wave_input)  # [B, S, D]
         
         # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
@@ -377,9 +410,40 @@ class WaveNetworkBlock(nn.Module):
             return self.wave_layer.bio_gate.noise_scale
         return None
 
+
+# 従来のWaveNetworkBlockクラスを保持（互換性のため）
+class WaveNetworkBlock(WaveletEnhancedNetworkBlock):
+    """
+    生体ゆらぎ機能を統合したWave Network Block の実装
+    """
+    def __init__(
+        self, 
+        hidden_size: int, 
+        dropout_prob: float = 0.1,
+        use_rope: bool = True,
+        max_seq_len: int = 2048,
+        noise_std: float = 0.1,
+        use_bio_noise: bool = True,
+        trainable_noise: bool = True
+    ):
+        super().__init__(
+            hidden_size=hidden_size, 
+            dropout_prob=dropout_prob,
+            use_rope=use_rope,
+            max_seq_len=max_seq_len,
+            noise_std=noise_std,
+            use_bio_noise=use_bio_noise,
+            trainable_noise=trainable_noise,
+            use_wavelet=False  # デフォルトではウェーブレットを使用しない
+        )
+
+# WaveNetworkLMクラスに生体ゆらぎとウェーブレット変換機能を統合
 class WaveNetworkLM(nn.Module):
     """
-    生体ゆらぎ機能を組み込んだWave Network モデル全体の実装
+    生体ゆらぎ機能とウェーブレット変換を組み込んだWave Network モデル
+    - 生体ゆらぎゲート機構により動的な重み付けを行う
+    - Haarウェーブレット変換により低周波成分を使用
+    - ハイパーパラメータ探索で最適化された設定を使用
     """
     def __init__(
         self,
@@ -395,27 +459,33 @@ class WaveNetworkLM(nn.Module):
         dropout_prob = config.dropout_prob
         use_rope = config.use_rope
         
-        # 生体ゆらぎ関連の設定を取得
-        noise_std = getattr(config, 'noise_std', 0.1)
+        # 生体ゆらぎ関連の設定を取得 (ハイパラ探索の最適値をデフォルトに)
+        noise_std = getattr(config, 'noise_std', 0.09377424894583282)
         use_bio_noise = getattr(config, 'use_bio_noise', True)
-        trainable_noise = getattr(config, 'trainable_noise', True)
+        trainable_noise = getattr(config, 'trainable_noise', False)
         
-        # cut cross entropyを使用するかどうかのフラグ（デフォルトはTrue）
+        # ウェーブレット関連の設定を取得
+        use_wavelet = getattr(config, 'use_wavelet', True)
+        wavelet_name = getattr(config, 'wavelet_name', 'haar')
+        
+        # cut cross entropyを使用するかどうかのフラグ
         self.use_cut_cross_entropy = getattr(config, 'use_cut_cross_entropy', True)
         
         # トークン埋め込み　nanが多発するので精緻な計算をするためfloat32にしておく
         self.token_embedding = nn.Embedding(vocab_size, hidden_size, dtype=torch.float32)
         
-        # 生体ゆらぎ機能を含むWave Network Blocksのスタック
+        # 生体ゆらぎ+ウェーブレット機能を含むWave Network Blocksのスタック
         self.layers = nn.ModuleList([
-            WaveNetworkBlock(
+            WaveletEnhancedNetworkBlock(
                 hidden_size=hidden_size,
                 dropout_prob=dropout_prob,
                 use_rope=use_rope,
                 max_seq_len=max_seq_len,
-                noise_std=noise_std,         # 生体ゆらぎの強度
+                noise_std=noise_std,         # 生体ゆらぎの強度（最適値）
                 use_bio_noise=use_bio_noise, # 生体ゆらぎを使用するかどうか
-                trainable_noise=trainable_noise  # ノイズスケールを学習させるかどうか
+                trainable_noise=trainable_noise,  # ノイズスケールを学習させるかどうか
+                use_wavelet=use_wavelet,     # ウェーブレット変換を使用
+                wavelet_name=wavelet_name    # ウェーブレットの種類
             ) for _ in range(num_layers)
         ])
         
@@ -427,9 +497,11 @@ class WaveNetworkLM(nn.Module):
         # 初期化
         self.apply(self._init_weights)
         
-        # 生体ゆらぎの設定をモデル属性として保存
+        # 設定をモデル属性として保存
         self.noise_std = noise_std
         self.use_bio_noise = use_bio_noise
+        self.use_wavelet = use_wavelet
+        self.wavelet_name = wavelet_name
         
     def _init_weights(self, module):
         """モデルの重みを初期化"""
@@ -447,7 +519,7 @@ class WaveNetworkLM(nn.Module):
             
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
-        生体ゆらぎを組み込んだモデルのforward pass
+        モデルのforward pass
         
         Args:
             input_ids: 入力トークンID [B, S]
@@ -459,7 +531,7 @@ class WaveNetworkLM(nn.Module):
         # トークン埋め込み
         hidden_states = self.token_embedding(input_ids)
         
-        # 各レイヤーを通過（生体ゆらぎゲート機構を適用）
+        # 各レイヤーを通過（生体ゆらぎゲート機構とウェーブレット変換を適用）
         for layer in self.layers:
             hidden_states = layer(hidden_states)
             
@@ -476,31 +548,25 @@ class WaveNetworkLM(nn.Module):
             return logits
 
     def get_classifier_weights(self) -> torch.Tensor:
-        """
-        cut-cross-entropyで linear_cross_entropy() を呼ぶ際に必要となる
-        分類器の重み (V, D)を返す。
-        """
+        """分類器の重み (V, D)を返す"""
         return self.classifier.weight
         
     def toggle_bio_noise(self, enabled: bool = True) -> None:
-        """
-        生体ゆらぎ機能のオン/オフを切り替える
-        
-        Args:
-            enabled: 有効にする場合はTrue、無効にする場合はFalse
-        """
+        """生体ゆらぎ機能のオン/オフを切り替える"""
         self.use_bio_noise = enabled
         for layer in self.layers:
             if hasattr(layer.wave_layer, 'use_bio_noise'):
                 layer.wave_layer.use_bio_noise = enabled
                 
+    def toggle_wavelet(self, enabled: bool = True) -> None:
+        """ウェーブレット変換機能のオン/オフを切り替える"""
+        self.use_wavelet = enabled
+        for layer in self.layers:
+            if hasattr(layer.wave_layer, 'use_wavelet'):
+                layer.wave_layer.use_wavelet = enabled
+                
     def set_noise_std(self, noise_std: float) -> None:
-        """
-        生体ゆらぎのノイズ強度を設定する
-        
-        Args:
-            noise_std: 新しいノイズ強度（標準偏差）
-        """
+        """生体ゆらぎのノイズ強度を設定する"""
         self.noise_std = noise_std
         for layer in self.layers:
             if hasattr(layer.wave_layer, 'use_bio_noise') and layer.wave_layer.use_bio_noise:
@@ -510,16 +576,11 @@ class WaveNetworkLM(nn.Module):
                         layer.wave_layer.bio_gate.noise_scale.fill_(noise_std)
                         
     def get_learnable_noise_scales(self) -> Dict[int, torch.Tensor]:
-        """
-        各レイヤーごとの学習された生体ゆらぎスケールを取得する（分析用）
-        
-        Returns:
-            layer_scales: レイヤーインデックスをキー、ノイズスケールテンソルを値とする辞書
-        """
+        """各レイヤーごとの学習された生体ゆらぎスケールを取得する（分析用）"""
         result = {}
         for i, layer in enumerate(self.layers):
             if hasattr(layer, 'get_noise_scale'):
                 noise_scale = layer.get_noise_scale()
                 if noise_scale is not None:
-                    result[i] = noise_scale.detach().cpu()  # CPU上のテンソルに変換
+                    result[i] = noise_scale.detach().cpu()
         return result

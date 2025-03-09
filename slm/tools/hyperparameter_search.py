@@ -231,26 +231,22 @@ class HyperparameterSearchConfig:
     """ハイパーパラメータ探索の設定を保持するデータクラス"""
     # 探索するパラメータの範囲
     param_ranges: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        'complex_init_scale': (0.005, 0.1),    # 複素数初期化スケール
-        'dropout_prob': (0.0, 0.5),            # ドロップアウト率
         'learning_rate': (5e-6, 2e-4),         # 学習率
         'warmup_steps': (100, 1000),           # ウォームアップステップ数
         'weight_decay': (1e-5, 0.1),           # 重み減衰 - 対数分布用
         'mlm_probability': (0.1, 0.25),        # MLMマスク確率
-        'noise_std': (0.01, 0.5),              # 生体ゆらぎのノイズ標準偏差
     })
     
-    # 整数パラメータの範囲
+    # 整数パラメータの範囲 (num_layersのみを特定の値で探索)
     int_ranges: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
-        'num_layers': (2, 8),                  # Wave Networkのレイヤー数（2〜8層）
+        # Wave Networkのレイヤー数は使用しない（カテゴリカルで設定）
     })
     
     # カテゴリカルパラメータ
     categorical_params: Dict[str, List[Any]] = field(default_factory=lambda: {
+        'num_layers': [1, 3, 6],               # Wave Networkのレイヤー数（固定の3つの値のみ）
         'batch_size': [4, 8, 16, 32],          # バッチサイズ候補（OOM対策で小さく）
         'clip_value': [0.5, 1.0, 2.0],         # 勾配クリップ値の候補
-        'use_bio_noise': [True, False],        # 生体ゆらぎ機能の有効/無効
-        'trainable_noise': [True, False],      # ノイズスケールを学習可能にするかどうか
     })
     
     # 探索設定
@@ -409,40 +405,42 @@ def create_model_from_params(trial: optuna.trial.Trial,
     int_ranges = search_config.int_ranges
     categorical_params = search_config.categorical_params
     
-    # 連続パラメータのサンプリング
-    complex_init_scale = trial.suggest_float('complex_init_scale', *param_ranges['complex_init_scale'], log=True)
-    dropout_prob = trial.suggest_float('dropout_prob', *param_ranges['dropout_prob'])  # 対数スケールなし
+    # 連続パラメータのサンプリング（固定値以外）
     learning_rate = trial.suggest_float('learning_rate', *param_ranges['learning_rate'], log=True)
     warmup_steps = trial.suggest_int('warmup_steps', *param_ranges['warmup_steps'])
     weight_decay = trial.suggest_float('weight_decay', *param_ranges['weight_decay'], log=True)
     mlm_probability = trial.suggest_float('mlm_probability', *param_ranges['mlm_probability'])  # 対数スケールなし
     
-    # 生体ゆらぎパラメータのサンプリング
-    noise_std = trial.suggest_float('noise_std', *param_ranges['noise_std'], log=True)
-    
-    # 整数パラメータのサンプリング
-    num_layers = trial.suggest_int('num_layers', *int_ranges['num_layers'])
+    # 固定値の設定
+    complex_init_scale = 0.02  # 固定値
+    dropout_prob = 0.2  # 固定値
+    noise_std = 0.1  # 固定値: 生体ゆらぎの標準偏差を0.1に固定
     
     # カテゴリカルパラメータ
+    num_layers = trial.suggest_categorical('num_layers', categorical_params['num_layers'])  # [1, 3, 6]から選択
     batch_size = trial.suggest_categorical('batch_size', categorical_params['batch_size'])
     clip_value = trial.suggest_categorical('clip_value', categorical_params['clip_value'])
     
-    # 生体ゆらぎ関連のカテゴリカルパラメータ
-    use_bio_noise = trial.suggest_categorical('use_bio_noise', categorical_params['use_bio_noise'])
-    trainable_noise = trial.suggest_categorical('trainable_noise', categorical_params['trainable_noise'])
+    # 固定のカテゴリカルパラメータ
+    use_bio_noise = True  # 固定値: 生体ゆらぎを使用
+    trainable_noise = False  # 固定値: ノイズスケールは固定（学習しない）
+    use_wavelet = True  # 固定値: ウェーブレット変換を使用
     
-    # モデル設定の構築 - 生体ゆらぎパラメータを含める
+    # モデル設定の構築 - 生体ゆらぎとウェーブレットのパラメータを含める
     model_config = ModelConfig(
         hidden_size=base_config.get('hidden_size', 768),
-        num_layers=num_layers,  # サンプリングされたレイヤー数を使用
+        num_layers=num_layers,  # サンプリングされたレイヤー数を使用 [1, 3, 6]
         max_seq_len=base_config.get('max_seq_len', 512),
         dropout_prob=dropout_prob,
         use_rope=base_config.get('use_rope', True),
         complex_init_scale=complex_init_scale,
-        # 生体ゆらぎ関連のパラメータを追加
-        use_bio_noise=use_bio_noise,
-        noise_std=noise_std,
-        trainable_noise=trainable_noise,
+        # 生体ゆらぎ関連のパラメータ（固定値）
+        use_bio_noise=use_bio_noise,  # True
+        noise_std=noise_std,          # 0.01
+        trainable_noise=trainable_noise,  # False
+        # ウェーブレット関連のパラメータ（固定値）
+        use_wavelet=use_wavelet,      # True
+        wavelet_name="haar",
     )
     
     # トレーニング設定の構築
@@ -683,7 +681,7 @@ def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # 現在時刻をもとにした結果保存用ディレクトリ名を作成
     timestamp = int(time.time())
-    results_dir_name = f"bio_noise_search_{timestamp}"
+    results_dir_name = f"layer_search_biowavelet_{timestamp}"  # レイヤー数探索実験用にスタディ名を変更
     
     # Google Driveがマウントされているか確認
     if os.path.exists('/content/drive/MyDrive'):
@@ -887,12 +885,16 @@ if __name__ == "__main__":
     if not args.force_local:
         check_and_mount_google_drive()
     
-    # 生体ゆらぎパラメータに関する情報を出力
-    logger.info("生体ゆらぎゲート機構のハイパーパラメータ探索を実行します")
+    # ハイパーパラメータ探索に関する情報を出力
+    logger.info("生体ゆらぎ+ウェーブレット変換の層数探索を実行します")
+    logger.info("固定パラメータ:")
+    logger.info("- use_bio_noise: True (生体ゆらぎ機能を使用)")
+    logger.info("- noise_std: 0.01 (生体ゆらぎの強度)")
+    logger.info("- trainable_noise: False (ノイズスケールは固定)")
+    logger.info("- use_wavelet: True (ウェーブレット変換を使用)")
+    logger.info("- wavelet_name: haar (Haarウェーブレットを使用)")
     logger.info("探索パラメータ:")
-    logger.info("- noise_std: 0.01 ~ 0.5 (生体ゆらぎの強度)")
-    logger.info("- use_bio_noise: True/False (生体ゆらぎ機能の有効/無効)")
-    logger.info("- trainable_noise: True/False (ノイズスケールを学習するかどうか)")
+    logger.info("- num_layers: [1, 3, 6] (Wave Networkの層数)")
     
     run_hyperparameter_search(
         config_file=args.config,
