@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List, Any
 from slm.modules.rmsnorm import RMSNorm
 from slm.modules.rope import RoPEEmbedding
 from slm.modules.activations import GatedMLP  # GatedMLPをインポート
