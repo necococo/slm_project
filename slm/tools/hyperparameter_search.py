@@ -156,7 +156,8 @@ def visualize_optimization_history(study: optuna.study.Study, output_dir: str) -
     plt.savefig(os.path.join(output_dir, "optuna_optimization_history.png"))
     
     # パレート図（もしマルチ目的最適化の場合）
-    if len(study.objectives) > 1:
+    # study.objectivesではなくstudy.directionsの長さで判断
+    if hasattr(study, 'directions') and len(study.directions) > 1:
         plt.figure(figsize=(10, 8))
         optuna.visualization.matplotlib.plot_pareto_front(study)
         plt.title('Pareto Front')
