@@ -231,22 +231,20 @@ class HyperparameterSearchConfig:
     """ハイパーパラメータ探索の設定を保持するデータクラス"""
     # 探索するパラメータの範囲
     param_ranges: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
-        'learning_rate': (5e-6, 2e-4),         # 学習率
-        'warmup_steps': (100, 1000),           # ウォームアップステップ数
-        'weight_decay': (1e-5, 0.1),           # 重み減衰 - 対数分布用
-        'mlm_probability': (0.1, 0.25),        # MLMマスク確率
+        'learning_rate': (2e-5, 1e-4),         # 学習率の範囲を制限
+        'weight_decay': (1e-4, 1e-4),          # 固定値 0.0001
     })
     
-    # 整数パラメータの範囲 (num_layersのみを特定の値で探索)
+    # 整数パラメータの範囲
     int_ranges: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
-        # Wave Networkのレイヤー数は使用しない（カテゴリカルで設定）
+        'warmup_steps': (500, 500),            # 固定値 500
     })
     
     # カテゴリカルパラメータ
     categorical_params: Dict[str, List[Any]] = field(default_factory=lambda: {
-        'num_layers': [1, 3, 6],               # Wave Networkのレイヤー数（固定の3つの値のみ）
-        'batch_size': [4, 8, 16, 32],          # バッチサイズ候補（OOM対策で小さく）
-        'clip_value': [0.5, 1.0, 2.0],         # 勾配クリップ値の候補
+        'num_layers': [1, 3],                  # Wave Networkのレイヤー数を1または3に制限
+        'batch_size': [4, 8, 16],              # バッチサイズ候補を制限
+        'clip_value': [1.0],                   # 勾配クリップ値を固定
     })
     
     # 探索設定
@@ -558,14 +556,14 @@ def objective(trial: optuna.trial.Trial,
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             
-        # 最初にMLM学習を実行
-        print("\n===== MLM学習フェーズ =====")
-        trainer.train_mlm(num_epochs=1)
+        # MLM学習をスキップしてdiffusion学習のみを実行
+        print("\n===== Diffusion学習フェーズ =====")
+        # MLM学習は実行しない
+        # trainer.train_mlm(num_epochs=1)
         
-        # 実験：Diffusion学習も試す場合
-        # 通常は時間短縮のためコメントアウトしておく
-        # if training_config.diffusion_epochs > 0:
-        #     trainer.train_diffusion(num_epochs=1)
+        # Diffusion学習を実行
+        training_config.diffusion_epochs = 2  # 探索では短いエポック数で実行
+        trainer.train_diffusion(num_epochs=2)
         
         # 評価
         # Trainerクラスのvalidateメソッドを呼び出す
@@ -712,10 +710,10 @@ def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # 必須とデフォルト値のマッピング
     required_keys = {
-        'dataset_name': 'singletongue/wikipedia-utils',
-        'dataset_subset': 'corpus-jawiki-20230403-filtered-large',
-        'model_name': 'cl-tohoku/bert-base-japanese-whole-word-masking',
-        'tokenizer_name': config.get('model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking'),
+        'dataset_name': 'wikitext',
+        'dataset_subset': 'wikitext-2-raw-v1',  # 小さいデータセットで開始
+        'model_name': 'bert-base-uncased',  # 英語用のBERTモデル
+        'tokenizer_name': config.get('model_name', 'bert-base-uncased'),  # 英語用のトークナイザー
         'base_dir': results_path,  # Google Drive上のパスに変更
         'output_dir': results_path,  # Google Drive上のパスに変更
         'cache_dir': os.path.join(os.getcwd(), 'cache'),  # キャッシュはローカルに残す

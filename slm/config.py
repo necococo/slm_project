@@ -103,9 +103,9 @@ class TrainingConfig:
         self,
         learning_rate: float = 1e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
         batch_size: int = 96,
-        mlm_epochs: int = 3,
+        mlm_epochs: int = 0,  # MLM学習をスキップ
         mlm_probability: float = 0.2,
-        diffusion_epochs: int = 2,  # デフォルトでdiffusion学習を有効化
+        diffusion_epochs: int = 5,  # diffusion学習のみを実行
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
         accumulation_steps: int = 1,  # 勾配累積ステップ数

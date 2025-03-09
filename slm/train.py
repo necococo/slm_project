@@ -3,6 +3,7 @@
 
 import os
 import time
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F  # F.cross_entropy用に追加
@@ -231,6 +232,12 @@ class Trainer:
                     embeddings = self.model(input_ids)
                     classifier = self.model.get_classifier_weights()
                     loss = linear_cross_entropy(embeddings, classifier, labels)
+                    
+                    # デバッグ用：分類器の勾配情報をランダムに表示（1%の確率）
+                    if random.random() < 0.01:
+                        print(f"\n===== 勾配計算前（ステップ {step}）=====")
+                        print(f"分類器の重みの形状: {classifier.shape}")
+                        print(f"分類器のrequires_grad: {classifier.requires_grad}")
             else:
                 # 通常のCross Entropy用の処理
                 if self.scaler is not None:
@@ -244,6 +251,21 @@ class Trainer:
             # 勾配計算
             loss.backward()
             loss_item = loss.item()
+            
+            # デバッグ用：勾配計算後に分類器の勾配情報を表示（1%の確率）
+            if random.random() < 0.01 and hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                print(f"\n===== 勾配計算後（ステップ {step}）=====")
+                classifier_weight = self.model.classifier.weight
+                if hasattr(classifier_weight, 'grad'):
+                    grad_status = "存在する" if classifier_weight.grad is not None else "None"
+                    if classifier_weight.grad is not None:
+                        print(f"分類器の勾配ノルム: {classifier_weight.grad.norm().item():.6f}")
+                        print(f"分類器の勾配最大値: {classifier_weight.grad.max().item():.6f}")
+                        print(f"分類器の勾配最小値: {classifier_weight.grad.min().item():.6f}")
+                    else:
+                        print(f"分類器の勾配状態: {grad_status}")
+                else:
+                    print("分類器の勾配属性が存在しません")
             
         # 勾配クリッピング（追加）
         if hasattr(self.training_config, 'clip_value') and self.training_config.clip_value:

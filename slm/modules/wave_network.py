@@ -362,6 +362,14 @@ class WaveletEnhancedNetworkBlock(nn.Module):
             wavelet_name=wavelet_name
         )
         
+        expansion_factor = 2
+        self.ffn = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size * expansion_factor),
+            nn.GELU(),
+            nn.Dropout(dropout_prob),
+            nn.Linear(self.hidden_size * expansion_factor, self.hidden_size)
+        )
+
         # RoPE (オプション)
         if self.use_rope:
             self.rope = RoPEEmbedding(hidden_size, max_seq_len)
@@ -393,6 +401,9 @@ class WaveletEnhancedNetworkBlock(nn.Module):
         
         # 1. ウェーブレット強化Wave Layer処理
         wave_output = self.wave_layer(wave_input)  # [B, S, D]
+        
+        # FNN層を通す
+        wave_output = self.fnn(wave_output)  # [B, S, D]
         
         # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
         output = self.dropout(x + wave_output)
@@ -537,7 +548,7 @@ class WaveNetworkLM(nn.Module):
             
         # 最終ノーマライゼーション
         last_hidden_states = self.norm(hidden_states)
-
+        
         # 損失関数タイプに基づいて異なる出力を返す
         if self.use_cut_cross_entropy:
             # Cut Cross Entropyの場合はlast_hidden_statesを返す

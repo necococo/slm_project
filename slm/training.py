@@ -233,12 +233,12 @@ def get_config(config_path=None):
         use_rope=True,
         
         # データセット設定
-        dataset_name="singletongue/wikipedia-utils",
-        dataset_subset="corpus-jawiki-20230403-filtered-large",
+        dataset_name="wikitext",
+        dataset_subset="wikitext-2-raw-v1",  # 小さいデータセットで開始
         
         # トークナイザー設定
-        model_name="cl-tohoku/bert-base-japanese-whole-word-masking",
-        tokenizer_name="cl-tohoku/bert-base-japanese-whole-word-masking",
+        model_name="bert-base-uncased",  # 英語用のBERTモデル
+        tokenizer_name="bert-base-uncased",  # 英語用のトークナイザー
         
         # 訓練設定
         learning_rate=1e-5,
@@ -371,14 +371,17 @@ def main():
     )
     
     print("モデル学習を開始します...")
-    # MLM学習とdiffusion学習を順に実行
-    print("\n===== MLM学習フェーズ =====")
-    trainer.train_mlm()
     
-    # 検証（MLM学習後）
-    print("\n===== MLM学習後のバリデーション =====")
-    val_loss = trainer.validate()
-    print(f"MLM学習後の最終検証結果: Loss={val_loss:.4f}, Perplexity={torch.exp(torch.tensor(val_loss)).item():.2f}")
+    # MLM学習をスキップし、diffusion学習のみを実行
+    if training_config.mlm_epochs > 0:
+        # MLM学習（設定されている場合のみ実行）
+        print("\n===== MLM学習フェーズ =====")
+        trainer.train_mlm()
+        
+        # 検証（MLM学習後）
+        print("\n===== MLM学習後のバリデーション =====")
+        val_loss = trainer.validate()
+        print(f"MLM学習後の最終検証結果: Loss={val_loss:.4f}, Perplexity={torch.exp(torch.tensor(val_loss)).item():.2f}")
     
     # diffusion学習（training_configにdiffusion_epochsが設定されている場合のみ実行）
     if hasattr(training_config, 'diffusion_epochs') and training_config.diffusion_epochs > 0:
