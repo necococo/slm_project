@@ -8,4 +8,5 @@
 - あなたは、明瞭なDocstringを書きます。
 - あなたは、コメントやDocstringを日本語で書きます。
 - あなたは、コードには How、テストコードには What、コミットログには Why、コードコメントには Why notを必ず書きます。
+- なるべくファイルやクラスや関数を増やさないようにして、すでに似たものがあるときはそれを修正してください。
 - 私が wave network というときは複素ベクトルによるシーケンスと単語の関係を表すこの論文[Wave Network: An Ultra-Small Language Model](https://arxiv.org/html/2411.02674v4) の内容を思い出してください。

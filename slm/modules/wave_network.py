@@ -31,7 +31,7 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     # 念の為float32に強制変換し、NaNをチェック
     x = x.float()
     if torch.isnan(x).any():
-        x = torch.nan_to_num(x, nan=0.0)
+        print("nanが現れた。compute_wave_representation(x)")
     
     B, S, D = x.shape
     
@@ -45,15 +45,23 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
         G = torch.sqrt(torch.sum(x * x, dim=1, keepdim=True) + eps)  # [B, 1, D]
         G = G.expand(-1, S, -1)  # [B, S, D]
     
-    G_safe = torch.clamp(G, min=eps)
-    
-    # 比率計算の数値安定性強化 - タンジェントのスケールを調整
+    # 安全な振幅値 - より安定した実装
+    G_safe = torch.clamp(G, min=eps) # より厳密な下限値の保証
+
+    # ===== 比率計算の数値安定性強化（ハイブリッドアプローチ） =====
+    # 1. まず極端な値をclampで制限（数値安定性の確保）
     ratio = x / G_safe
-    ratio = torch.tanh(ratio) * 0.95  # 0.99から0.95に変更してより安全なマージンを確保
+    ratio = torch.clamp(ratio, min=-100.0, max=100.0)  # 極端な値を制限
     
-    # 位相角 (α_jk) の計算
+    # 2. 次にtanhで滑らかな勾配を維持しながら-0.99〜0.99に制限
+    ratio = torch.tanh(ratio) * 0.99
+    
+    # ===== 位相角 (α_jk) の計算 =====
+    # 1 - ratio^2 が負になる可能性がある（数値誤差のため）
     inside = 1.0 - ratio**2
-    inside = F.relu(inside) + eps  # 負値を除去
+    
+    # 非線形関数よりもclampを使用することで、厳密に非負値を保証
+    inside = torch.clamp(inside, min=0.0) + eps
     
     # arctan2(√(1-ratio²), ratio)
     alpha = torch.atan2(torch.sqrt(inside), ratio)
@@ -62,10 +70,12 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     real_part = G_safe * torch.cos(alpha)
     imag_part = G_safe * torch.sin(alpha)
     
-    # 最終的な数値チェック
-    real_part = torch.nan_to_num(real_part)
-    imag_part = torch.nan_to_num(imag_part)
-    
+    if torch.isnan(real_part).any():
+        print("nanが現れた。compute_wave_representation real_part")  
+
+    if torch.isnan(imag_part).any():
+        print("nanが現れた。compute_wave_representation imag_part")  
+
     return real_part, imag_part
 
 class SingleWaveLayer(nn.Module):
@@ -77,13 +87,18 @@ class SingleWaveLayer(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         
-        # 拡張係数を大きくして表現力を向上
-        expansion_factor = 6  # 4から6に増加
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size * 2 * expansion_factor),
+        expansion_factor = 4
+        self.ffn_real = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * expansion_factor),
             nn.GELU(),
-            nn.Dropout(dropout_prob),  # ドロップアウトを追加
-            nn.Linear(hidden_size * 2 * expansion_factor, hidden_size * 2)
+            # nn.Dropout(dropout_prob),  # ドロップアウトを追加
+            nn.Linear(hidden_size * expansion_factor, hidden_size)
+        )
+        self.ffn_imag = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * expansion_factor),
+            nn.GELU(),
+            # nn.Dropout(dropout_prob),  # ドロップアウトを追加
+            nn.Linear(hidden_size * expansion_factor, hidden_size)
         )
         
         # 論文の図6(a)では明示的なノーマライゼーションは表示されていない
@@ -119,10 +134,9 @@ class SingleWaveLayer(nn.Module):
         combined_imag = imag_sen + imag_token
         
         # 結合波表現
-        wave_repr = torch.cat([combined_real, combined_imag], dim=-1)  # [B, S, 2D]
-        
-        # FFN処理 - 論文の図6(a)に従い波表現空間で処理
-        wave_repr = self.ffn(wave_repr)  # [B, S, 2D]
+        real_part = self.ffn_real(combined_real)  # [B, S, D]
+        imag_part = self.ffn_imag(combined_imag)  # [B, S, D]
+        wave_repr = torch.cat([real_part, imag_part], dim=-1)  # [B, S, 2D]
         
         # 波表現から埋め込み空間への変換（図6(a)最後のステップ）
         output = self.to_embedding(wave_repr)  # [B, S, D]

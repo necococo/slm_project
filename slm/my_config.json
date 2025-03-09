@@ -1,0 +1,8 @@
+{
+    "hidden_size": 512,
+    "num_layers": 4,
+    "max_seq_len": 256,
+    "output_dir": "/path/to/output",
+    "dataset_name": "custom_dataset",
+    "model_name": "cl-tohoku/bert-base-japanese-whole-word-masking"
+  }

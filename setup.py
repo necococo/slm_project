@@ -9,11 +9,16 @@ setup(
         "pywavelets",
         "datasets",
         "huggingface_hub",
-        "pytest",
         "bitsandbytes>=0.41.0,<0.42.0",
         "fugashi",
         "ipadic",
         "unidic-lite",
         "cut-cross-entropy",
+        "optuna"
     ],
+    extras_require={
+        "dev": [
+            "pytest",
+        ],
+    },
 )
