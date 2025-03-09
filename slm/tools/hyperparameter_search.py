@@ -43,6 +43,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+from types import SimpleNamespace
+from typing import Optional, Dict, Any, Union, Tuple, List, Callable, NamedTuple
+
 @dataclass
 class HyperparameterSearchConfig:
     """ハイパーパラメータ探索の設定を保持するデータクラス"""
@@ -394,6 +397,53 @@ def load_and_prepare_dataset(paths_config: PathsConfig,
     return subsample_dataset(full_dataset, sample_size, sample_ratio)
 
 
+def dict_to_namespace(d: Dict[str, Any]) -> SimpleNamespace:
+    """
+    辞書をSimpleNamespace（属性アクセス可能なオブジェクト）に変換する
+    
+    Args:
+        d: 変換する辞書
+    
+    Returns:
+        属性アクセス可能なオブジェクト
+    """
+    # 再帰的に処理するため、ネストされた辞書も変換
+    for key, value in d.items():
+        if isinstance(value, dict):
+            d[key] = dict_to_namespace(value)
+    return SimpleNamespace(**d)
+
+
+def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    setup_environment関数に必要な設定キーが存在することを確認し、
+    存在しない場合はデフォルト値を設定する
+    
+    Args:
+        config: 設定辞書
+    
+    Returns:
+        必要なキーを持つ設定辞書
+    """
+    # 必須とデフォルト値のマッピング
+    required_keys = {
+        'dataset_name': 'singletongue/wikipedia-utils',
+        'dataset_subset': 'corpus-jawiki-20230403-filtered-large',
+        'model_name': 'cl-tohoku/bert-base-japanese-whole-word-masking',
+        'tokenizer_name': config.get('model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking'),
+        'base_dir': os.path.join(os.getcwd(), 'slm_output'),
+        'output_dir': os.path.join(os.getcwd(), 'slm_output'),
+        'cache_dir': os.path.join(os.getcwd(), 'cache'),
+    }
+    
+    # 存在しないキーを追加
+    for key, default_value in required_keys.items():
+        if key not in config:
+            config[key] = default_value
+    
+    return config
+
+
 def run_hyperparameter_search(
     config_file: Optional[str] = None, 
     n_trials: int = 10, 
@@ -421,8 +471,14 @@ def run_hyperparameter_search(
     # 基本設定の読み込み
     base_config = load_base_config(config_file)
     
-    # 環境設定
-    device, paths_config = setup_environment(base_config)
+    # 必須キーを持つことを確認
+    base_config = ensure_required_config_keys(base_config)
+    
+    # 辞書を属性アクセス可能なオブジェクトに変換
+    config_obj = dict_to_namespace(base_config)
+    
+    # 環境設定 - 変換したオブジェクトを渡す
+    device, paths_config = setup_environment(config_obj)
     
     # 探索設定の作成
     search_config = HyperparameterSearchConfig(
