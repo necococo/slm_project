@@ -550,13 +550,19 @@ def objective(trial: optuna.trial.Trial,
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             
-        # train_mlmメソッドを呼び出す（train()ではなく）
-        # トレーニングステップを少なくして1エポック未満に制限
+        # 最初にMLM学習を実行
+        print("\n===== MLM学習フェーズ =====")
         trainer.train_mlm(num_epochs=1)
+        
+        # 実験：Diffusion学習も試す場合
+        # 通常は時間短縮のためコメントアウトしておく
+        # if training_config.diffusion_epochs > 0:
+        #     trainer.train_diffusion(num_epochs=1)
         
         # 評価
         # Trainerクラスのvalidateメソッドを呼び出す
         try:
+            print("\n===== バリデーションフェーズ =====")
             loss = trainer.validate()
             # 損失値からperplexityを計算（損失値が非常に大きい場合は無限大とする）
             perplexity = float('inf') if loss > 20 else torch.exp(torch.tensor(loss)).item()
@@ -566,7 +572,7 @@ def objective(trial: optuna.trial.Trial,
             perplexity = float('inf')
         
         # 進捗状況の報告
-        logger.info(f"Trial {trial.number} 結果: Perplexity = {perplexity:.4f}, Loss = {loss:.4f}")
+        logger.info(f"Trial {trial.number} 結果: [Validation] Perplexity = {perplexity:.4f}, Loss = {loss:.4f}")
         
         # 中間結果を保存
         trial.set_user_attr('perplexity', float(perplexity))

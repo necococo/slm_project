@@ -105,7 +105,7 @@ class TrainingConfig:
         batch_size: int = 96,
         mlm_epochs: int = 3,
         mlm_probability: float = 0.2,
-        diffusion_epochs: int = 0,
+        diffusion_epochs: int = 2,  # デフォルトでdiffusion学習を有効化
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
         accumulation_steps: int = 1,  # 勾配累積ステップ数

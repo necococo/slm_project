@@ -1,4 +1,4 @@
-# slm/trainer.py
+# slm/train.py
 # Why not: 学習ループと評価を整理し、TensorBoard による監視を統合する
 
 import os
@@ -126,7 +126,7 @@ class Trainer:
                 total_steps += 1
                 
                 if batch_idx % 10 == 0:
-                    print(f"Epoch {epoch+1}/{epochs} | Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
+                    print(f"Epoch {epoch+1}/{epochs} | Training Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
             
             # エポック統計
             avg_loss = epoch_loss / len(dataloader)
@@ -265,7 +265,17 @@ class Trainer:
             return
 
         vocab_size = self.model.get_classifier_weights().size(0)
-        diffuser = SimpleTextDiffusion(timesteps=20, mask_token_id=4, vocab_size=vocab_size).to(self.device)
+        # マスクトークンIDをトークナイザーから取得（初期値は4）
+        mask_token_id = 4  # デフォルト値
+        if hasattr(self.model.config, 'tokenizer') and self.model.config.tokenizer is not None:
+            if hasattr(self.model.config.tokenizer, 'mask_token_id'):
+                mask_token_id = self.model.config.tokenizer.mask_token_id
+            
+        diffuser = SimpleTextDiffusion(
+            timesteps=20, 
+            mask_token_id=mask_token_id, 
+            vocab_size=vocab_size
+        ).to(self.device)
         
         dataloader = DataLoader(
             self.train_dataset,
@@ -287,7 +297,7 @@ class Trainer:
                 total_steps += 1
 
                 if batch_idx % 10 == 0:
-                    print(f"Diffusion Epoch {epoch+1}/{epochs} | Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
+                    print(f"Diffusion Epoch {epoch+1}/{epochs} | Training Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
 
             avg_loss = epoch_loss / len(dataloader)
             epoch_time = time.time() - epoch_start_time
@@ -307,8 +317,20 @@ class Trainer:
 
     def _diffusion_train_step(self, batch: Dict[str, torch.Tensor], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
         self.model.train()
-        input_ids = batch["input_ids"].to(self.device)
-        labels = batch["labels"].to(self.device)
+        # input_idsとlabelsキーが存在するか確認（データフォーマットが異なる可能性に対応）
+        if "input_ids" in batch:
+            input_ids = batch["input_ids"].to(self.device)
+        elif "tokens" in batch:
+            input_ids = batch["tokens"].to(self.device)
+        else:
+            raise ValueError("バッチにinput_idsまたはtokensキーが存在しません")
+            
+        # ラベルの処理
+        if "labels" in batch:
+            labels = batch["labels"].to(self.device)
+        else:
+            # ラベルが提供されていない場合は、diffuserを使って生成する
+            noisy_tokens, labels = diffuser(input_ids.clone(), torch.tensor([t], device=self.device))
         
         self.optimizer.zero_grad()
         
@@ -461,7 +483,7 @@ class Trainer:
         processed_batches = min(i + 1, total_batches)
         avg_loss = total_loss / processed_batches if processed_batches > 0 else 100.0
         
-        print(f"Validation Loss: {avg_loss:.4f} (using {processed_batches} batches, max memory: {max_memory_used:.2f}MB)")
+        print(f"Validation Loss: {avg_loss:.4f} [Perplexity: {torch.exp(torch.tensor(avg_loss)).item():.2f}] (using {processed_batches} batches, max memory: {max_memory_used:.2f}MB)")
         return avg_loss
 
     def save_checkpoint(self, name: str) -> None:

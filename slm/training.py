@@ -337,16 +337,33 @@ def main():
     # トレーナーの初期化と学習の実行
     trainer = Trainer(
         model=model,
-        tokenizer=tokenizer,
-        train_dataloader=train_loader,
-        eval_dataloader=valid_loader,
-        device=device,
-        config=training_config,  # マージした本番用設定を使用
-        paths_config=paths_config
+        train_dataset=train_dataset,
+        valid_dataset=valid_dataset,
+        training_config=training_config,  # マージした本番用設定を使用
+        paths_config=paths_config,
+        device=device
     )
     
     print("モデル学習を開始します...")
-    trainer.train()
+    # MLM学習とdiffusion学習を順に実行
+    print("\n===== MLM学習フェーズ =====")
+    trainer.train_mlm()
+    
+    # 検証（MLM学習後）
+    print("\n===== MLM学習後のバリデーション =====")
+    val_loss = trainer.validate()
+    print(f"MLM学習後の最終検証結果: Loss={val_loss:.4f}, Perplexity={torch.exp(torch.tensor(val_loss)).item():.2f}")
+    
+    # diffusion学習（training_configにdiffusion_epochsが設定されている場合のみ実行）
+    if hasattr(training_config, 'diffusion_epochs') and training_config.diffusion_epochs > 0:
+        print("\n===== Diffusion学習フェーズ =====")
+        trainer.train_diffusion()
+        
+        # 検証（Diffusion学習後）
+        print("\n===== Diffusion学習後のバリデーション =====")
+        val_loss = trainer.validate()
+        print(f"Diffusion学習後の最終検証結果: Loss={val_loss:.4f}, Perplexity={torch.exp(torch.tensor(val_loss)).item():.2f}")
+    
     print("モデル学習が完了しました！")
     
     # モデルの保存
