@@ -474,6 +474,14 @@ def objective(trial: optuna.trial.Trial,
              paths_config: PathsConfig, 
              dataset: Union[Dataset, DatasetDict],
              search_config: HyperparameterSearchConfig) -> float:
+    
+    # tqdmを使用するための準備
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        # tqdmがない場合はダミーのtqdmを作成
+        def tqdm(iterable, **kwargs):
+            return iterable
     """
     Optunaの目的関数: モデルのトレーニングと評価を行い、評価指標を返す
     
@@ -822,11 +830,22 @@ def run_hyperparameter_search(
         trial, base_config, device, paths_config, dataset, search_config
     )
     
+    # tqdmのインポートを確保
+    try:
+        from tqdm.auto import tqdm
+        import optuna.integration
+        optuna_tqdm = optuna.integration.TQDMProgressBar()
+        callbacks = [optuna_tqdm]
+    except (ImportError, AttributeError):
+        # tqdmまたはoptuna.integrationがない場合
+        callbacks = []
+    
     study.optimize(
         objective_func,
         n_trials=n_trials,
         timeout=timeout,
-        n_jobs=n_jobs
+        n_jobs=n_jobs,
+        callbacks=callbacks
     )
     
     # 結果の可視化と保存

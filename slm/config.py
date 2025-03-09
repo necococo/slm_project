@@ -152,16 +152,47 @@ class PathsConfig:
         dataset_subset: Optional[str] = None,
         tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking",
         output_dir: Optional[str] = None,
-        cache_dir: Optional[str] = None
+        cache_dir: Optional[str] = None,
+        run_name: Optional[str] = None
     ):
         self.base_dir = base_dir
+        
+        # 一意の実行名を生成（指定がない場合）
+        if run_name is None:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Google Colab環境の検出（try-exceptで囲む）
+            try:
+                import IPython
+                is_colab = 'google.colab' in str(IPython.get_ipython())
+            except (ImportError, NameError):
+                is_colab = False
+            self.run_name = f"run_{timestamp}_{'colab' if is_colab else 'local'}"
+        else:
+            self.run_name = run_name
+            
+        # Google Driveがマウントされているか確認
+        gdrive_mount_point = '/content/drive/MyDrive'
+        if os.path.exists(gdrive_mount_point):
+            print("Google Driveが検出されました。結果をGoogle Driveに保存します。")
+            # Google Driveに結果を保存するためのディレクトリを作成
+            gdrive_output = os.path.join(gdrive_mount_point, "slm_outputs", self.run_name)
+            self.output_base = gdrive_output
+        else:
+            # ローカル実行時は指定されたbase_dirの下に保存
+            self.output_base = os.path.join(self.base_dir, "runs", self.run_name)
+        
+        print(f"実行ID: {self.run_name}")
+        print(f"出力ディレクトリ: {self.output_base}")
+        
+        # 各種ディレクトリのパスを設定
         self.data_dir = os.path.join(self.base_dir, "data")
-        self.checkpoint_dir = os.path.join(self.base_dir, "checkpoints")
-        self.log_dir = os.path.join(self.base_dir, "logs")
+        self.checkpoint_dir = os.path.join(self.output_base, "checkpoints")
+        self.log_dir = os.path.join(self.output_base, "logs")
         self.dataset_name = dataset_name
         self.dataset_subset = dataset_subset
         self.tokenizer_name = tokenizer_name
-        self.output_dir = output_dir if output_dir is not None else os.path.join(self.base_dir, "output")
+        self.output_dir = output_dir if output_dir is not None else self.output_base
         self.cache_dir = cache_dir if cache_dir is not None else os.path.join(self.base_dir, "cache")
         self.visualization_path = os.path.join(self.output_dir, "visualizations")
         self.logs_path = os.path.join(self.log_dir, "tensorboard")

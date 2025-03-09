@@ -20,14 +20,19 @@ def setup_environment(config):
     """環境のセットアップを行う"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    # 実行名が指定されているか確認
+    run_name = getattr(config, "run_name", None)
+    
     # PathsConfigをconfigの各項目から初期化
     paths_config = PathsConfig(
         base_dir=getattr(config, "base_dir", os.getcwd()),
         dataset_name=config.dataset_name,
         dataset_subset=config.dataset_subset,
         tokenizer_name=getattr(config, "tokenizer_name", "cl-tohoku/bert-base-japanese-whole-word-masking"),
-        output_dir=getattr(config, "output_dir", os.path.join(os.getcwd(), "output")),
-        cache_dir=getattr(config, "cache_dir", os.path.join(os.getcwd(), "cache"))
+        output_dir=getattr(config, "output_dir", None),  # Noneを指定して自動生成させる
+        cache_dir=getattr(config, "cache_dir", os.path.join(os.getcwd(), "cache")),
+        run_name=run_name  # 実行名を渡す（Noneの場合は自動生成）
     )
     # 正しいディレクトリ群を作成
     os.makedirs(paths_config.checkpoint_dir, exist_ok=True)
@@ -200,6 +205,23 @@ def get_config(config_path=None):
     """
     from types import SimpleNamespace
     
+    # 一意の実行名を生成
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Google Colab環境の検出
+    try:
+        import IPython
+        is_colab = 'google.colab' in str(IPython.get_ipython())
+    except (ImportError, NameError):
+        is_colab = False
+    
+    # 実行環境に応じたディレクトリ設定
+    if is_colab:
+        base_dir = '/content/slm_project'
+    else:
+        base_dir = os.getcwd()
+    
     # デフォルト設定
     config = SimpleNamespace(
         # モデル設定
@@ -222,15 +244,19 @@ def get_config(config_path=None):
         learning_rate=1e-5,
         batch_size=16,
         mlm_epochs=3,
+        diffusion_epochs=2,  # diffusion学習のエポック数も設定
         mlm_probability=0.15,
         weight_decay=0.01,
         warmup_steps=500,
         accumulation_steps=1,
         
         # パス設定
-        base_dir=os.path.join(os.getcwd(), "slm_output"),
-        output_dir=os.path.join(os.getcwd(), "slm_output"),
-        cache_dir=os.path.join(os.getcwd(), "cache"),
+        base_dir=base_dir,
+        # output_dirはPathsConfigで自動生成するためNoneに設定
+        output_dir=None,
+        cache_dir=os.path.join(base_dir, "cache"),
+        # 実行名を設定
+        run_name=f"run_{timestamp}_{'colab' if is_colab else 'local'}",
         
         # その他の設定
         use_amp=True,
@@ -381,6 +407,10 @@ def main():
     
     # 埋め込みの抽出と可視化 (tools/analysis.pyからインポートした関数を使用)
     try:
+        # 可視化用のディレクトリを明示的に作成
+        os.makedirs(paths_config.visualization_path, exist_ok=True)
+        print(f"可視化用ディレクトリを確認/作成しました: {paths_config.visualization_path}")
+        
         num_samples = getattr(selected_config, 'num_samples', 100)
         print(f"埋め込みを抽出して可視化します (サンプル数: {num_samples})...")
         embeddings = extract_embeddings(model, valid_dataset, tokenizer, model_config, device, num_samples=num_samples)

@@ -116,11 +116,20 @@ class Trainer:
         total_steps = 0
         start_time = time.time()
         
+        # tqdmのインポートを確保
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            # tqdmがない場合はダミーのtqdmを作成
+            def tqdm(iterable, **kwargs):
+                return iterable
+        
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
             
-            for batch_idx, batch in enumerate(dataloader):
+            # tqdmでラップしてプログレスバーを表示
+            for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"MLM Epoch {epoch+1}/{epochs}", leave=False)):
                 step_loss = self._mlm_train_step(batch, total_steps)
                 epoch_loss += step_loss
                 total_steps += 1
@@ -285,12 +294,22 @@ class Trainer:
         
         total_steps = 0
         start_time = time.time()
-
+        
+        # tqdmのインポートを確保（すでにインポート済みの場合はスキップ）
+        if 'tqdm' not in locals():
+            try:
+                from tqdm.auto import tqdm
+            except ImportError:
+                # tqdmがない場合はダミーのtqdmを作成
+                def tqdm(iterable, **kwargs):
+                    return iterable
+        
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
             
-            for batch_idx, batch in enumerate(dataloader):
+            # tqdmでラップしてプログレスバーを表示
+            for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Diffusion Epoch {epoch+1}/{epochs}", leave=False)):
                 t = torch.randint(0, diffuser.timesteps, (1,)).item()
                 step_loss = self._diffusion_train_step(batch, diffuser, t, total_steps)
                 epoch_loss += step_loss
@@ -417,8 +436,16 @@ class Trainer:
         total_loss = 0.0
         total_batches = min(10, len(dataloader))  # 最大10バッチに制限
         
+        # tqdmのインポートを確保
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            # tqdmがない場合はダミーのtqdmを作成
+            def tqdm(iterable, **kwargs):
+                return iterable
+        
         with torch.no_grad():
-            for i, batch in enumerate(dataloader):
+            for i, batch in enumerate(tqdm(dataloader, desc="Validation", total=total_batches, leave=False)):
                 # 最大10バッチまでで終了（メモリ使用量を制限）
                 if i >= total_batches:
                     break

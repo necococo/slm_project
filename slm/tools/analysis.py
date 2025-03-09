@@ -27,7 +27,14 @@ def extract_embeddings(model, dataset, tokenizer, model_config, device, num_samp
     token_imag_embeds = []
     
     with torch.no_grad():
-        for i in tqdm(range(min(num_samples, len(dataset))), desc="Extracting embeddings"):
+        try:
+            from tqdm.auto import tqdm as tqdm_auto
+            progress_bar = tqdm_auto(range(min(num_samples, len(dataset))), desc="Extracting embeddings")
+        except ImportError:
+            # 通常のtqdmを使用（すでにインポート済み）
+            progress_bar = tqdm(range(min(num_samples, len(dataset))), desc="Extracting embeddings")
+            
+        for i in progress_bar:
             # 安全なインデックスアクセス
             idx = i if hasattr(PathsConfig, 'safe_index') else i % len(dataset)
             example = dataset[idx]
@@ -79,6 +86,10 @@ def extract_embeddings(model, dataset, tokenizer, model_config, device, num_samp
 
 def visualize_embeddings(embeddings, paths_config):
     """埋め込み表現の分布を可視化します"""
+    # visualization_pathが存在するか確認し、必要なら作成
+    os.makedirs(paths_config.visualization_path, exist_ok=True)
+    print(f"可視化結果の保存先: {paths_config.visualization_path}")
+    
     plt.figure(figsize=(20, 15))
     
     # センテンスレベル実部
