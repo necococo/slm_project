@@ -15,10 +15,17 @@ import argparse
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union, Tuple, List, Callable
 
+# 明示的にoptunaを最初にインポート
+print("optunaをインポート中...")
 try:
     import optuna
-except ImportError:
+    import optuna.integration
+    print("optuna バージョン:", optuna.__version__)
+except ImportError as e:
     print("optunaパッケージが見つかりません。pip install optunaでインストールしてください。")
+    print("エラー詳細:", e)
+    print("使用可能なパッケージ:")
+    help("modules")
     sys.exit(1)
 
 import torch
@@ -748,7 +755,7 @@ def run_hyperparameter_search(
     n_jobs: int = 1,
     sample_size: Optional[int] = None,
     sample_ratio: Optional[float] = None
-) -> Tuple[optuna.study.Study, Dict[str, Any]]:
+) -> Tuple[Any, Dict[str, Any]]:
     """
     ハイパーパラメータ探索のメイン関数
     
@@ -763,6 +770,9 @@ def run_hyperparameter_search(
     Returns:
         (study, results): Optunaのstudyオブジェクトと結果の辞書
     """
+    # ここでも明示的にoptunaを再インポート
+    import optuna
+    
     logger.info("Wave Network モデルのハイパーパラメータ探索を開始します")
     
     # 基本設定の読み込み
@@ -820,13 +830,21 @@ def run_hyperparameter_search(
     # 実際のサンプリングはprepare_data_for_trainingの中で実行される
     
     # Optuna Studyの作成
-    study = optuna.create_study(
-        study_name=search_config.study_name,
-        storage=search_config.storage,
-        load_if_exists=True,
-        direction="minimize",  # 損失を最小化
-        pruner=optuna.pruners.MedianPruner(n_warmup_steps=5)
-    )
+    try:
+        # 明示的にoptuna prunerをインポート
+        from optuna.pruners import MedianPruner
+        
+        study = optuna.create_study(
+            study_name=search_config.study_name,
+            storage=search_config.storage,
+            load_if_exists=True,
+            direction="minimize",  # 損失を最小化
+            pruner=MedianPruner(n_warmup_steps=5)
+        )
+        print("Optuna studyを作成しました:", search_config.study_name)
+    except Exception as e:
+        print("Optuna studyの作成中にエラーが発生しました:", e)
+        raise
     
     # CUDA メモリ管理設定
     if torch.cuda.is_available():
