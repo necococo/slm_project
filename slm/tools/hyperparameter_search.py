@@ -259,6 +259,27 @@ class HyperparameterSearchConfig:
         'clip_value': [1.0],                   # 勾配クリップ値を固定
     })
     
+    # デバッグ用に明示的に設定を出力
+    def print_settings(self):
+        """探索設定を出力"""
+        print("\n===== ハイパーパラメータ探索設定 =====")
+        print("連続パラメータ範囲:")
+        for k, v in self.param_ranges.items():
+            print(f"- {k}: {v}")
+        
+        print("\n整数パラメータ範囲:")
+        for k, v in self.int_ranges.items():
+            print(f"- {k}: {v}")
+            
+        print("\nカテゴリカルパラメータ:")
+        for k, v in self.categorical_params.items():
+            print(f"- {k}: {v}")
+            
+        print("\n探索設定:")
+        print(f"- 試行回数: {self.n_trials}")
+        print(f"- 並列実行数: {self.n_jobs}")
+        print(f"- サンプルサイズ: {self.sample_size}")
+    
     # 探索設定
     n_trials: int = 10                          # 試行回数
     timeout: Optional[int] = None               # タイムアウト（秒）
@@ -417,9 +438,20 @@ def create_model_from_params(trial: optuna.trial.Trial,
     
     # 連続パラメータのサンプリング（固定値以外）
     learning_rate = trial.suggest_float('learning_rate', *param_ranges['learning_rate'], log=True)
-    warmup_steps = trial.suggest_int('warmup_steps', *param_ranges['warmup_steps'])
+    
+    # warmup_stepsが整数範囲にあれば通常のsuggest_int、なければ固定値500を使用
+    if 'warmup_steps' in int_ranges:
+        warmup_steps = trial.suggest_int('warmup_steps', *int_ranges['warmup_steps'])
+    else:
+        warmup_steps = 500  # 固定値
+        
     weight_decay = trial.suggest_float('weight_decay', *param_ranges['weight_decay'], log=True)
-    mlm_probability = trial.suggest_float('mlm_probability', *param_ranges['mlm_probability'])  # 対数スケールなし
+    
+    # MLM確率も同様にチェック
+    if 'mlm_probability' in param_ranges:
+        mlm_probability = trial.suggest_float('mlm_probability', *param_ranges['mlm_probability'])  # 対数スケールなし
+    else:
+        mlm_probability = 0.15  # デフォルト値
     
     # 固定値の設定
     complex_init_scale = 0.02  # 固定値
@@ -427,9 +459,20 @@ def create_model_from_params(trial: optuna.trial.Trial,
     noise_std = 0.1  # 固定値: 生体ゆらぎの標準偏差を0.1に固定
     
     # カテゴリカルパラメータ
-    num_layers = trial.suggest_categorical('num_layers', categorical_params['num_layers'])  # [1, 3, 6]から選択
-    batch_size = trial.suggest_categorical('batch_size', categorical_params['batch_size'])
-    clip_value = trial.suggest_categorical('clip_value', categorical_params['clip_value'])
+    if 'num_layers' in categorical_params:
+        num_layers = trial.suggest_categorical('num_layers', categorical_params['num_layers'])  # [1, 3]から選択
+    else:
+        num_layers = 3  # デフォルト値
+    
+    if 'batch_size' in categorical_params:
+        batch_size = trial.suggest_categorical('batch_size', categorical_params['batch_size'])
+    else:
+        batch_size = 16  # デフォルト値
+    
+    if 'clip_value' in categorical_params:
+        clip_value = trial.suggest_categorical('clip_value', categorical_params['clip_value'])
+    else:
+        clip_value = 1.0  # デフォルト値
     
     # 固定のカテゴリカルパラメータ
     use_bio_noise = True  # 固定値: 生体ゆらぎを使用
@@ -795,6 +838,9 @@ def run_hyperparameter_search(
         sample_size=sample_size,
         sample_ratio=sample_ratio
     )
+    
+    # デバッグ用に設定を明示的に出力
+    search_config.print_settings()
     
     # デバイス設定は setup_environment で取得済み
     logger.info(f"Using device: {device}")
