@@ -15,13 +15,18 @@ import argparse
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union, Tuple, List, Callable
 
-import optuna
+try:
+    import optuna
+except ImportError:
+    print("optunaパッケージが見つかりません。pip install optunaでインストールしてください。")
+    sys.exit(1)
+
 import torch
 import numpy as np
 import math
 import matplotlib.pyplot as plt
 from datasets import load_dataset, load_from_disk, Dataset, DatasetDict
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
 
 # プロジェクトのルートディレクトリをPythonパスに追加
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -449,14 +454,22 @@ def create_model_from_params(trial: optuna.trial.Trial,
         weight_decay=weight_decay,
         warmup_steps=warmup_steps,
         clip_value=clip_value,
-        mlm_epochs=base_config.get('mlm_epochs', 1),
+        mlm_epochs=0,  # MLM学習を無効化
+        diffusion_epochs=2,  # diffusion学習を有効化
         accumulation_steps=base_config.get('accumulation_steps', 1),
         use_amp=base_config.get('use_amp', True),
     )
     
     # トークナイザの設定
-    tokenizer_name = base_config.get('model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking')
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer_name = base_config.get('model_name', 'bert-base-uncased')
+    try:
+        # 英語用のトークナイザーをロード
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        print(f"トークナイザー {tokenizer_name} をロードしました。語彙数: {tokenizer.vocab_size}")
+    except Exception as e:
+        print(f"トークナイザーロード中にエラーが発生しました: {e}")
+        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        print("代替のbert-base-uncasedトークナイザーをロードしました")
     model_config.set_tokenizer(tokenizer)
     
     # モデルの構築
@@ -621,10 +634,11 @@ def load_base_config(config_file: Optional[str] = None) -> Dict[str, Any]:
         'num_layers': 3,
         'max_seq_len': 512,
         'use_rope': True,
-        'mlm_epochs': 1,
+        'mlm_epochs': 0,  # MLM学習を無効化
+        'diffusion_epochs': 2,  # diffusion学習を有効化
         'accumulation_steps': 1,
         'use_amp': True,
-        'model_name': 'cl-tohoku/bert-base-japanese-whole-word-masking',
+        'model_name': 'bert-base-uncased',  # 英語用のモデル
     }
 
 
