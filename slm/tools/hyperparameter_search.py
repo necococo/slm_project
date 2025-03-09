@@ -237,6 +237,7 @@ class HyperparameterSearchConfig:
         'warmup_steps': (100, 1000),           # ウォームアップステップ数
         'weight_decay': (1e-5, 0.1),           # 重み減衰 - 対数分布用
         'mlm_probability': (0.1, 0.25),        # MLMマスク確率
+        'noise_std': (0.01, 0.5),              # 生体ゆらぎのノイズ標準偏差
     })
     
     # 整数パラメータの範囲
@@ -248,6 +249,8 @@ class HyperparameterSearchConfig:
     categorical_params: Dict[str, List[Any]] = field(default_factory=lambda: {
         'batch_size': [4, 8, 16, 32],          # バッチサイズ候補（OOM対策で小さく）
         'clip_value': [0.5, 1.0, 2.0],         # 勾配クリップ値の候補
+        'use_bio_noise': [True, False],        # 生体ゆらぎ機能の有効/無効
+        'trainable_noise': [True, False],      # ノイズスケールを学習可能にするかどうか
     })
     
     # 探索設定
@@ -414,6 +417,9 @@ def create_model_from_params(trial: optuna.trial.Trial,
     weight_decay = trial.suggest_float('weight_decay', *param_ranges['weight_decay'], log=True)
     mlm_probability = trial.suggest_float('mlm_probability', *param_ranges['mlm_probability'])  # 対数スケールなし
     
+    # 生体ゆらぎパラメータのサンプリング
+    noise_std = trial.suggest_float('noise_std', *param_ranges['noise_std'], log=True)
+    
     # 整数パラメータのサンプリング
     num_layers = trial.suggest_int('num_layers', *int_ranges['num_layers'])
     
@@ -421,7 +427,11 @@ def create_model_from_params(trial: optuna.trial.Trial,
     batch_size = trial.suggest_categorical('batch_size', categorical_params['batch_size'])
     clip_value = trial.suggest_categorical('clip_value', categorical_params['clip_value'])
     
-    # モデル設定の構築 - num_layersを含める
+    # 生体ゆらぎ関連のカテゴリカルパラメータ
+    use_bio_noise = trial.suggest_categorical('use_bio_noise', categorical_params['use_bio_noise'])
+    trainable_noise = trial.suggest_categorical('trainable_noise', categorical_params['trainable_noise'])
+    
+    # モデル設定の構築 - 生体ゆらぎパラメータを含める
     model_config = ModelConfig(
         hidden_size=base_config.get('hidden_size', 768),
         num_layers=num_layers,  # サンプリングされたレイヤー数を使用
@@ -429,6 +439,10 @@ def create_model_from_params(trial: optuna.trial.Trial,
         dropout_prob=dropout_prob,
         use_rope=base_config.get('use_rope', True),
         complex_init_scale=complex_init_scale,
+        # 生体ゆらぎ関連のパラメータを追加
+        use_bio_noise=use_bio_noise,
+        noise_std=noise_std,
+        trainable_noise=trainable_noise,
     )
     
     # トレーニング設定の構築
@@ -664,15 +678,35 @@ def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         必要なキーを持つ設定辞書
     """
+    # Google Driveのマウント先パスを確認
+    drive_base_path = '/content/drive/MyDrive/slm'
+    
+    # 現在時刻をもとにした結果保存用ディレクトリ名を作成
+    timestamp = int(time.time())
+    results_dir_name = f"bio_noise_search_{timestamp}"
+    
+    # Google Driveがマウントされているか確認
+    if os.path.exists('/content/drive/MyDrive'):
+        # Google Driveのslmディレクトリを作成（存在しない場合）
+        os.makedirs(drive_base_path, exist_ok=True)
+        
+        # 結果保存用ディレクトリパスを作成
+        results_path = os.path.join(drive_base_path, results_dir_name)
+        print(f"ハイパーパラメータ探索の結果を {results_path} に保存します")
+    else:
+        # Google Driveがマウントされていない場合はローカルディレクトリを使用
+        results_path = os.path.join(os.getcwd(), f'slm_output_{results_dir_name}')
+        print(f"Google Driveが見つかりません。結果を {results_path} に保存します")
+    
     # 必須とデフォルト値のマッピング
     required_keys = {
         'dataset_name': 'singletongue/wikipedia-utils',
         'dataset_subset': 'corpus-jawiki-20230403-filtered-large',
         'model_name': 'cl-tohoku/bert-base-japanese-whole-word-masking',
         'tokenizer_name': config.get('model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking'),
-        'base_dir': os.path.join(os.getcwd(), 'slm_output'),
-        'output_dir': os.path.join(os.getcwd(), 'slm_output'),
-        'cache_dir': os.path.join(os.getcwd(), 'cache'),
+        'base_dir': results_path,  # Google Drive上のパスに変更
+        'output_dir': results_path,  # Google Drive上のパスに変更
+        'cache_dir': os.path.join(os.getcwd(), 'cache'),  # キャッシュはローカルに残す
     }
     
     # 存在しないキーを追加
@@ -803,6 +837,22 @@ def run_hyperparameter_search(
     return study, results
 
 
+def check_and_mount_google_drive():
+    """
+    Google Colab環境でGoogle Driveがマウントされているか確認し、
+    マウントされていない場合はマウントを促すメッセージを表示します。
+    """
+    if not os.path.exists('/content/drive/MyDrive'):
+        print("\n" + "=" * 80)
+        print("Google Driveがマウントされていません。")
+        print("Google Colab環境でこのスクリプトを実行している場合は、")
+        print("以下のコードを実行してGoogle Driveをマウントしてください：")
+        print("\nfrom google.colab import drive")
+        print("drive.mount('/content/drive')")
+        print("=" * 80 + "\n")
+        return False
+    return True
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Wave Network モデルのハイパーパラメータ探索")
     parser.add_argument("--config", type=str, help="基本設定を含むJSONファイルのパス")
@@ -813,6 +863,7 @@ if __name__ == "__main__":
     parser.add_argument("--sample-ratio", type=float, default=None, help="データサンプリング比率")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", 
                         help="ログレベル設定")
+    parser.add_argument("--force-local", action="store_true", help="Google Driveが利用可能でも結果をローカルに保存")
     
     args = parser.parse_args()
     
@@ -831,6 +882,17 @@ if __name__ == "__main__":
         logger.info(f"データセットサンプル比率: {args.sample_ratio * 100:.1f}%")
     else:
         logger.info("サンプリングなし: フルデータセットを使用")
+    
+    # Google Driveのマウント確認（強制ローカル保存オプションがない場合）
+    if not args.force_local:
+        check_and_mount_google_drive()
+    
+    # 生体ゆらぎパラメータに関する情報を出力
+    logger.info("生体ゆらぎゲート機構のハイパーパラメータ探索を実行します")
+    logger.info("探索パラメータ:")
+    logger.info("- noise_std: 0.01 ~ 0.5 (生体ゆらぎの強度)")
+    logger.info("- use_bio_noise: True/False (生体ゆらぎ機能の有効/無効)")
+    logger.info("- trainable_noise: True/False (ノイズスケールを学習するかどうか)")
     
     run_hyperparameter_search(
         config_file=args.config,

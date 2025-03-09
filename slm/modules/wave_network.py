@@ -121,37 +121,133 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
 
     return real_part, imag_part
 
-class SingleWaveLayer(nn.Module):
+class BiologicalNoiseGate(nn.Module):
     """
-    Wave Network Layer の実装 (Fig.6(a))
-    論文の図6(a)に忠実に従った実装
+    振幅と位相から生体ゆらぎを組み込んだゲーティング機構
+    
+    生体システムでは、微小なノイズが確率共鳴などを通じて弱い信号を増幅し、
+    システムの感度を高める効果が知られています。この機構はその効果を模倣します。
     """
-    def __init__(self, hidden_size: int, dropout_prob: float = 0.1):
+    def __init__(self, hidden_size: int, noise_std: float = 0.1, trainable_noise: bool = True):
         super().__init__()
         self.hidden_size = hidden_size
+        self.noise_std = noise_std
+        self.trainable_noise = trainable_noise
+        
+        # 振幅と位相から重みを計算するための線形層
+        self.W_amplitude = nn.Linear(hidden_size, hidden_size)
+        self.W_phase = nn.Linear(hidden_size, hidden_size)
+        
+        # 学習可能なノイズスケール (trainable_noiseがTrueの場合)
+        if trainable_noise:
+            # ノイズ強度を制御するパラメータ（各次元ごとに異なる値を持つ）
+            self.noise_scale = nn.Parameter(torch.ones(hidden_size) * noise_std)
+        else:
+            self.register_buffer('noise_scale', torch.ones(hidden_size) * noise_std)
+        
+        # バイアス項
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
+        
+    def forward(self, amplitude: torch.Tensor, phase: torch.Tensor, training: bool = True) -> torch.Tensor:
+        """
+        振幅と位相から生体ゆらぎを組み込んだゲートを計算
+        
+        Args:
+            amplitude: 振幅テンソル [B, S, D]
+            phase: 位相テンソル [B, S, D]
+            training: 訓練モードかどうか（Trueの場合のみノイズを適用）
+            
+        Returns:
+            gate: ゲート値 [B, S, D]（値域は0〜1）
+        """
+        # 振幅と位相からの重み計算
+        w_amp = self.W_amplitude(amplitude)
+        w_phase = self.W_phase(phase)
+        
+        # 基本的なゲート計算（ノイズなし）
+        gate_pre = w_amp + w_phase + self.bias
+        
+        # 訓練中かつノイズが有効な場合のみノイズを適用
+        if training:
+            # 生体ゆらぎを模倣した正規分布ノイズを生成
+            # ノイズの大きさは各次元ごとに異なる値を持つ
+            noise_shape = gate_pre.shape
+            device = gate_pre.device
+            noise = torch.randn(noise_shape, device=device)
+            
+            # 各次元ごとのノイズスケールを適用
+            # self.noise_scaleをbroadcastして適用
+            scaled_noise = noise * self.noise_scale.view(1, 1, -1)
+            
+            # ノイズを加える（生体ゆらぎの導入）
+            gate_pre = gate_pre + scaled_noise
+        
+        # シグモイド関数でゲート値の範囲を0〜1に制限
+        gate = torch.sigmoid(gate_pre)
+        
+        return gate
+
+class SingleWaveLayer(nn.Module):
+    """
+    生体ゆらぎを組み込んだWave Network Layer の拡張実装
+    基本的な構造はFig.6(a)に基づきつつ、生体ゆらぎゲート機構を追加
+    """
+    def __init__(self, hidden_size: int, dropout_prob: float = 0.1, 
+                 noise_std: float = 0.1, use_bio_noise: bool = True, 
+                 trainable_noise: bool = True):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.use_bio_noise = use_bio_noise
         
         expansion_factor = 4
         self.ffn_real = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * expansion_factor),
             nn.GELU(),
-            # nn.Dropout(dropout_prob),  # ドロップアウトを追加
+            nn.Dropout(dropout_prob),  # ドロップアウトを追加
             nn.Linear(hidden_size * expansion_factor, hidden_size)
         )
         self.ffn_imag = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * expansion_factor),
             nn.GELU(),
-            # nn.Dropout(dropout_prob),  # ドロップアウトを追加
+            nn.Dropout(dropout_prob),  # ドロップアウトを追加
             nn.Linear(hidden_size * expansion_factor, hidden_size)
         )
         
-        # 論文の図6(a)では明示的なノーマライゼーションは表示されていない
-        # ただし、波表現から元の埋め込み空間への変換が示されている
+        # 波表現から元の埋め込み空間への変換
         self.to_embedding = nn.Linear(hidden_size * 2, hidden_size)
         self.norm = RMSNorm(hidden_size)
+        
+        # 生体ゆらぎゲート機構（振幅と位相から動的重みを計算）
+        if use_bio_noise:
+            self.bio_gate = BiologicalNoiseGate(
+                hidden_size, 
+                noise_std=noise_std,
+                trainable_noise=trainable_noise
+            )
+        
+    def compute_amplitude_phase(self, real_part: torch.Tensor, imag_part: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        実部と虚部から振幅と位相を計算
+        
+        Args:
+            real_part: 実部 [B, S, D]
+            imag_part: 虚部 [B, S, D]
+            
+        Returns:
+            amplitude: 振幅 [B, S, D]
+            phase: 位相 [B, S, D]
+        """
+        # 振幅 = √(実部² + 虚部²)
+        amplitude = torch.sqrt(real_part**2 + imag_part**2 + 1e-5)
+        
+        # 位相 = arctan(虚部/実部)
+        phase = torch.atan2(imag_part, real_part)
+        
+        return amplitude, phase
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Wave Layer forward pass
+        生体ゆらぎを組み込んだWave Layer forward pass
         
         Args:
             x: 入力テンソル [B, S, D]
@@ -172,16 +268,34 @@ class SingleWaveLayer(nn.Module):
         # トークンレベルのwave表現
         real_token, imag_token = compute_wave_representation(x, global_mode=False, eps=eps)
         
-        # 波の干渉（加算）- Fig.6(a)の中央部分
+        # 波の干渉（加算）
         combined_real = real_sen + real_token
         combined_imag = imag_sen + imag_token
         
-        # 結合波表現
-        real_part = self.ffn_real(combined_real)  # [B, S, D]
-        imag_part = self.ffn_imag(combined_imag)  # [B, S, D]
+        # 生体ゆらぎゲート機構を使用する場合
+        if self.use_bio_noise:
+            # 実部と虚部から振幅と位相を計算
+            amplitude, phase = self.compute_amplitude_phase(combined_real, combined_imag)
+            
+            # 振幅と位相から生体ゆらぎを組み込んだゲートを計算
+            gate = self.bio_gate(amplitude, phase, training=self.training)
+            
+            # ゲートで重み付け
+            gated_real = combined_real * gate
+            gated_imag = combined_imag * gate
+            
+            # ゲート適用後の波表現を処理
+            real_part = self.ffn_real(gated_real)  # [B, S, D]
+            imag_part = self.ffn_imag(gated_imag)  # [B, S, D]
+        else:
+            # 従来通りの処理
+            real_part = self.ffn_real(combined_real)  # [B, S, D]
+            imag_part = self.ffn_imag(combined_imag)  # [B, S, D]
+        
+        # 実部と虚部を結合して波表現を作成
         wave_repr = torch.cat([real_part, imag_part], dim=-1)  # [B, S, 2D]
         
-        # 波表現から埋め込み空間への変換（図6(a)最後のステップ）
+        # 波表現から埋め込み空間への変換
         output = self.to_embedding(wave_repr)  # [B, S, D]
         output = self.norm(output)
 
@@ -189,22 +303,31 @@ class SingleWaveLayer(nn.Module):
 
 class WaveNetworkBlock(nn.Module):
     """
-    Wave Network Block の実装 (Fig.6(b))
-    論文の図6(b)に忠実に従った実装
+    生体ゆらぎ機能を統合したWave Network Block の実装
     """
     def __init__(
         self, 
         hidden_size: int, 
         dropout_prob: float = 0.1,
         use_rope: bool = True,
-        max_seq_len: int = 2048
+        max_seq_len: int = 2048,
+        noise_std: float = 0.1,
+        use_bio_noise: bool = True,
+        trainable_noise: bool = True
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.use_rope = use_rope
+        self.use_bio_noise = use_bio_noise
         
-        # Wave Layer - 波表現処理のみ
-        self.wave_layer = SingleWaveLayer(hidden_size, dropout_prob)
+        # Wave Layer - 生体ゆらぎゲート機構を含む拡張バージョン
+        self.wave_layer = SingleWaveLayer(
+            hidden_size=hidden_size, 
+            dropout_prob=dropout_prob,
+            noise_std=noise_std,
+            use_bio_noise=use_bio_noise,
+            trainable_noise=trainable_noise
+        )
         
         # RoPE (オプション)
         if self.use_rope:
@@ -213,9 +336,12 @@ class WaveNetworkBlock(nn.Module):
         # 残差接続後の処理
         self.dropout = nn.Dropout(dropout_prob)
         
+        # 生体ゆらぎの状態記録用（デバッグ/分析用）
+        self.noise_history = []
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Wave Network Block forward pass
+        生体ゆらぎを組み込んだWave Network Block forward pass
         
         Args:
             x: 入力テンソル [B, S, D]
@@ -232,17 +358,28 @@ class WaveNetworkBlock(nn.Module):
         else:
             wave_input = x
         
-        # 1. Wave Layer処理
+        # 1. 拡張Wave Layer処理（生体ゆらぎゲート機構を含む）
         wave_output = self.wave_layer(wave_input)  # [B, S, D]
         
         # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
         output = self.dropout(x + wave_output)
         
         return output
+        
+    def get_noise_scale(self) -> Optional[torch.Tensor]:
+        """
+        生体ゆらぎのスケールパラメータを取得（分析用）
+        
+        Returns:
+            noise_scale: ノイズスケールパラメータ [D]、使用していない場合はNone
+        """
+        if self.use_bio_noise:
+            return self.wave_layer.bio_gate.noise_scale
+        return None
 
 class WaveNetworkLM(nn.Module):
     """
-    Wave Network モデル全体の実装
+    生体ゆらぎ機能を組み込んだWave Network モデル全体の実装
     """
     def __init__(
         self,
@@ -257,19 +394,28 @@ class WaveNetworkLM(nn.Module):
         max_seq_len = config.max_seq_len
         dropout_prob = config.dropout_prob
         use_rope = config.use_rope
+        
+        # 生体ゆらぎ関連の設定を取得
+        noise_std = getattr(config, 'noise_std', 0.1)
+        use_bio_noise = getattr(config, 'use_bio_noise', True)
+        trainable_noise = getattr(config, 'trainable_noise', True)
+        
         # cut cross entropyを使用するかどうかのフラグ（デフォルトはTrue）
         self.use_cut_cross_entropy = getattr(config, 'use_cut_cross_entropy', True)
         
         # トークン埋め込み　nanが多発するので精緻な計算をするためfloat32にしておく
         self.token_embedding = nn.Embedding(vocab_size, hidden_size, dtype=torch.float32)
         
-        # Wave Network Blocksのスタック - 各レイヤーでRoPEを使用する設定
+        # 生体ゆらぎ機能を含むWave Network Blocksのスタック
         self.layers = nn.ModuleList([
             WaveNetworkBlock(
                 hidden_size=hidden_size,
                 dropout_prob=dropout_prob,
-                use_rope=use_rope,  # configから取得した設定値を使用
-                max_seq_len=max_seq_len
+                use_rope=use_rope,
+                max_seq_len=max_seq_len,
+                noise_std=noise_std,         # 生体ゆらぎの強度
+                use_bio_noise=use_bio_noise, # 生体ゆらぎを使用するかどうか
+                trainable_noise=trainable_noise  # ノイズスケールを学習させるかどうか
             ) for _ in range(num_layers)
         ])
         
@@ -278,20 +424,30 @@ class WaveNetworkLM(nn.Module):
         
         # 最終ノーマライゼーション
         self.norm = RMSNorm(hidden_size)
-        # 初期化 直下の_init_weightsクラス関数をつかう
+        # 初期化
         self.apply(self._init_weights)
         
+        # 生体ゆらぎの設定をモデル属性として保存
+        self.noise_std = noise_std
+        self.use_bio_noise = use_bio_noise
+        
     def _init_weights(self, module):
+        """モデルの重みを初期化"""
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, BiologicalNoiseGate):
+            # 生体ゆらぎゲート機構の初期化
+            nn.init.normal_(module.W_amplitude.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.W_phase.weight, mean=0.0, std=0.02)
+            nn.init.zeros_(module.bias)
             
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
-        モデルのforward pass
+        生体ゆらぎを組み込んだモデルのforward pass
         
         Args:
             input_ids: 入力トークンID [B, S]
@@ -303,7 +459,7 @@ class WaveNetworkLM(nn.Module):
         # トークン埋め込み
         hidden_states = self.token_embedding(input_ids)
         
-        # 各レイヤーを通過（各レイヤーでRoPEを適用）
+        # 各レイヤーを通過（生体ゆらぎゲート機構を適用）
         for layer in self.layers:
             hidden_states = layer(hidden_states)
             
@@ -321,8 +477,49 @@ class WaveNetworkLM(nn.Module):
 
     def get_classifier_weights(self) -> torch.Tensor:
         """
-        How:
-            cut-cross-entropyで linear_cross_entropy() を呼ぶ際に必要となる
-            分類器の重み (V, D)を返す。
-"""
+        cut-cross-entropyで linear_cross_entropy() を呼ぶ際に必要となる
+        分類器の重み (V, D)を返す。
+        """
         return self.classifier.weight
+        
+    def toggle_bio_noise(self, enabled: bool = True) -> None:
+        """
+        生体ゆらぎ機能のオン/オフを切り替える
+        
+        Args:
+            enabled: 有効にする場合はTrue、無効にする場合はFalse
+        """
+        self.use_bio_noise = enabled
+        for layer in self.layers:
+            if hasattr(layer.wave_layer, 'use_bio_noise'):
+                layer.wave_layer.use_bio_noise = enabled
+                
+    def set_noise_std(self, noise_std: float) -> None:
+        """
+        生体ゆらぎのノイズ強度を設定する
+        
+        Args:
+            noise_std: 新しいノイズ強度（標準偏差）
+        """
+        self.noise_std = noise_std
+        for layer in self.layers:
+            if hasattr(layer.wave_layer, 'use_bio_noise') and layer.wave_layer.use_bio_noise:
+                # 学習可能パラメータの場合は初期値だけを更新
+                if hasattr(layer.wave_layer.bio_gate, 'noise_scale') and isinstance(layer.wave_layer.bio_gate.noise_scale, nn.Parameter):
+                    with torch.no_grad():
+                        layer.wave_layer.bio_gate.noise_scale.fill_(noise_std)
+                        
+    def get_learnable_noise_scales(self) -> Dict[int, torch.Tensor]:
+        """
+        各レイヤーごとの学習された生体ゆらぎスケールを取得する（分析用）
+        
+        Returns:
+            layer_scales: レイヤーインデックスをキー、ノイズスケールテンソルを値とする辞書
+        """
+        result = {}
+        for i, layer in enumerate(self.layers):
+            if hasattr(layer, 'get_noise_scale'):
+                noise_scale = layer.get_noise_scale()
+                if noise_scale is not None:
+                    result[i] = noise_scale.detach().cpu()  # CPU上のテンソルに変換
+        return result
