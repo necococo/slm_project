@@ -13,7 +13,7 @@ class SimpleTextDiffusion(nn.Module):
     """
     def __init__(
         self, 
-        timesteps: int = 20, 
+        timesteps: int = 10, 
         mask_token_id: int = 4,
         vocab_size: int = 30000,
         beta_schedule: str = "linear"
