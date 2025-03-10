@@ -84,7 +84,7 @@ from slm.training import (
 )
 
 # prepare_data_for_trainingを自前で実装（training.pyのものは使わない）
-def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, sample_size=None, training_config=None):
+def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=4, sample_size=None, training_config=None):
     """
     学習用のデータを準備する
     
@@ -318,7 +318,7 @@ class HyperparameterSearchConfig:
     # カテゴリカルパラメータ
     categorical_params: Dict[str, List[Any]] = field(default_factory=lambda: {
         'num_layers': [1, 3],                  # Wave Networkのレイヤー数を1または3に制限
-        'batch_size': [4, 8, 16],              # バッチサイズ候補を制限
+        'batch_size': [4, 8],              # バッチサイズ候補を制限
         # 'clip_value': [1.0],                   # 勾配クリップ値を固定
     })
     
@@ -535,7 +535,7 @@ def create_model_from_params(trial: optuna.trial.Trial,
     if 'batch_size' in categorical_params:
         batch_size = trial.suggest_categorical('batch_size', categorical_params['batch_size'])
     else:
-        batch_size = 16  # デフォルト値
+        batch_size = 4  # デフォルト値
     
     if 'clip_value' in categorical_params:
         clip_value = trial.suggest_categorical('clip_value', categorical_params['clip_value'])
