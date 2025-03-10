@@ -298,7 +298,18 @@ def get_selected_config(use_easy_config=True, config_path=None):
             accumulation_steps=1,
             use_amp=True
         )
-        return config
+        
+        # プロダクション設定には dataset_name と dataset_subset が必要
+        from types import SimpleNamespace
+        # 基本的な設定に必要な属性を追加
+        config_with_dataset = SimpleNamespace(**vars(config))
+        config_with_dataset.dataset_name = "shunk031/JGLUE"
+        config_with_dataset.dataset_subset = None
+        config_with_dataset.model_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
+        config_with_dataset.tokenizer_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
+        config_with_dataset.base_dir = os.getcwd()
+        
+        return config_with_dataset
 
 
 def main():
