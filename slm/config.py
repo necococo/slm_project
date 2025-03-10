@@ -98,12 +98,13 @@ class TrainingConfig:
     How:
         トレーニング関連の設定を保持するクラス。
         学習率、バッチサイズ、エポック数などを指定。
+        注: mlm_epochs=0, diffusion_epochs=3 に設定することでDiffusionモードのみで実行可能
     """
     def __init__(
         self,
         learning_rate: float = 2e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
         batch_size: int = 32,
-        mlm_epochs: int = 0,  # MLM学習をスキップ
+        mlm_epochs: int = 0,  # MLM学習をスキップ (0にするとMLM学習は実行されない)
         mlm_probability: float = 0.2,
         diffusion_epochs: int = 3,  # diffusion学習のみを実行
         weight_decay: float = 0.01,
@@ -142,13 +143,13 @@ class PathsConfig:
         data_dir: データセットを保存するベースディレクトリ
         checkpoint_dir: 学習済みモデル(重みファイル)を保存するディレクトリ
         log_dir: TensorBoardログや学習進捗を保存するディレクトリ
-        dataset_name: 使用するデータセット名（例："shunk031/JGLUE", "wikitext"）
+        dataset_name: 使用するデータセット名（例："NINJAL/NWJC", "shunk031/JGLUE", "wikitext"）
         dataset_subset: データセットのサブセット（例："JSQuAD", "wikitext-103-raw-v1"）
     """
     def __init__(
         self,
         base_dir: str = os.getcwd(),  # カレントディレクトリを基準
-        dataset_name: str = "shunk031/JGLUE",
+        dataset_name: str = "NINJAL/NWJC",  # NINJAL Web Japanese Corpus
         dataset_subset: Optional[str] = None,
         tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking",
         output_dir: Optional[str] = None,

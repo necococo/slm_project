@@ -47,8 +47,33 @@ def load_dataset_from_disk_or_download(paths_config: PathsConfig, config):
     """ディスクからデータセットをロードするか、ない場合はダウンロードする"""
     try:
         # データセットのロード
-        print(f"データセット {paths_config.dataset_name}/{paths_config.dataset_subset} をロードします...")
-        dataset = load_dataset(paths_config.dataset_name, paths_config.dataset_subset, cache_dir=paths_config.cache_dir)
+        dataset_name = paths_config.dataset_name
+        dataset_subset = paths_config.dataset_subset
+        
+        # JGLUEデータセットは dataset_name のみ指定するように修正
+        if dataset_name == "shunk031/JGLUE":
+            print(f"データセット {dataset_name} をロードします...")
+            dataset = load_dataset(
+                dataset_name,
+                cache_dir=paths_config.cache_dir,
+                trust_remote_code=True  # JGLUEデータセットにはカスタムコードが含まれているため
+            )
+        elif dataset_subset:
+            print(f"データセット {dataset_name}/{dataset_subset} をロードします...")
+            dataset = load_dataset(
+                dataset_name,
+                dataset_subset,
+                cache_dir=paths_config.cache_dir,
+                trust_remote_code=True
+            )
+        else:
+            print(f"データセット {dataset_name} をロードします...")
+            dataset = load_dataset(
+                dataset_name,
+                cache_dir=paths_config.cache_dir,
+                trust_remote_code=True
+            )
+            
         print("データセットのロードが完了しました！")
         return dataset
     except Exception as e:
@@ -172,178 +197,59 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
     return train_loader, valid_loader, train_data, valid_data
 
 
-def merge_configs(easy_config, config_module):
-    """
-    easy_configの簡易設定とconfig.pyの本番設定をマージする
-    easy_configを優先し、存在しない設定はデフォルト値から取得する
-    """
-    # TrainingConfigで本番用設定を作成
-    training_config = TrainingConfig(
-        learning_rate=getattr(easy_config, 'learning_rate', 5e-5),
-        batch_size=getattr(easy_config, 'batch_size', 16),
-        mlm_epochs=getattr(easy_config, 'mlm_epochs', 3),
-        mlm_probability=getattr(easy_config, 'mlm_probability', 0.15),
-        weight_decay=getattr(easy_config, 'weight_decay', 0.01),
-        warmup_steps=getattr(easy_config, 'warmup_steps', 500),
-        accumulation_steps=getattr(easy_config, 'accumulation_steps', 1),
-        use_amp=getattr(easy_config, 'use_amp', True),
-        clip_value=getattr(easy_config, 'clip_value', 1.0)
-    )
-    
-    return training_config
 
 
-def get_config(config_path=None):
+def get_selected_config():
     """
-    サンプル設定を生成する関数
-    
-    Args:
-        config_path: 設定ファイルのパス（未実装）
-        
-    Returns:
-        設定オブジェクト（属性アクセス可能なSimpleNamespace）
-    """
-    from types import SimpleNamespace
-    
-    # 一意の実行名を生成
-    import datetime
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Google Colab環境の検出
-    try:
-        import IPython
-        is_colab = 'google.colab' in str(IPython.get_ipython())
-    except (ImportError, NameError):
-        is_colab = False
-    
-    # 実行環境に応じたディレクトリ設定
-    if is_colab:
-        base_dir = '/content/slm_project'
-    else:
-        base_dir = os.getcwd()
-    
-    # デフォルト設定
-    config = SimpleNamespace(
-        # モデル設定
-        hidden_size=768,
-        ffn_dim=768 * 4,
-        num_layers=3,
-        max_seq_len=512,
-        dropout_prob=0.1,
-        use_rope=True,
-        
-        # データセット設定
-        dataset_name="ag_news",  # 高品質なニュースデータセット
-        dataset_subset=None,  # サブセットなし
-        
-        # トークナイザー設定
-        model_name="bert-base-uncased",  # 英語用のBERTモデル
-        tokenizer_name="bert-base-uncased",  # 英語用のトークナイザー
-        
-        # 訓練設定
-        learning_rate=1e-5,
-        batch_size=16,
-        mlm_epochs=3,
-        diffusion_epochs=2,  # diffusion学習のエポック数も設定
-        mlm_probability=0.15,
-        weight_decay=0.01,
-        warmup_steps=500,
-        accumulation_steps=1,
-        
-        # パス設定
-        base_dir=base_dir,
-        # output_dirはPathsConfigで自動生成するためNoneに設定
-        output_dir=None,
-        cache_dir=os.path.join(base_dir, "cache"),
-        # 実行名を設定
-        run_name=f"run_{timestamp}_{'colab' if is_colab else 'local'}",
-        
-        # その他の設定
-        use_amp=True,
-        num_samples=100,
-        sample_size=None,  # サンプルサイズ設定（Noneの場合は全データ使用）
-    )
-    
-    return config
-
-def get_selected_config(use_easy_config=True, config_path=None):
-    """
-    指定された設定タイプに基づいて設定を読み込む
-    
-    Args:
-        use_easy_config: True for easy_config, False for production config
-        config_path: Optional path to a config file
+    本番用設定を返す
     
     Returns:
         設定オブジェクト
     """
-    if use_easy_config:
-        print("easy_configから簡易設定を読み込みます...")
-        if config_path:
-            return get_config(config_path)
-        else:
-            return get_config()
-    else:
-        print("本番用設定(config.py)を読み込みます...")
-        # configモジュールから直接TrainingConfigを作成
-        import slm.config as config_module
-        # DEFAULT_CONFIGが存在しないので、代わりにデフォルト値を使用してTrainingConfigを生成
-        config = TrainingConfig(
-            learning_rate=1e-5,
-            batch_size=16, 
-            mlm_epochs=3,
-            mlm_probability=0.15,
-            weight_decay=0.01,
-            warmup_steps=500,
-            accumulation_steps=1,
-            use_amp=True
-        )
-        
-        # プロダクション設定には dataset_name と dataset_subset が必要
-        from types import SimpleNamespace
-        # 基本的な設定に必要な属性を追加
-        config_with_dataset = SimpleNamespace(**vars(config))
-        config_with_dataset.dataset_name = "shunk031/JGLUE"
-        config_with_dataset.dataset_subset = None
-        config_with_dataset.model_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
-        config_with_dataset.tokenizer_name = "cl-tohoku/bert-base-japanese-whole-word-masking"
-        config_with_dataset.base_dir = os.getcwd()
-        
-        return config_with_dataset
+    print("本番用設定(config.py)を読み込みます...")
+    # configモジュールから直接TrainingConfigを作成
+    import slm.config as config_module
+    # TrainingConfigを生成
+    config = TrainingConfig(
+        learning_rate=1e-5,
+        batch_size=16, 
+        mlm_epochs=3,
+        mlm_probability=0.15,
+        weight_decay=0.01,
+        warmup_steps=500,
+        accumulation_steps=1,
+        use_amp=True
+    )
+    
+    # 必要な追加属性を設定
+    from types import SimpleNamespace
+    import datetime
+    # 実行時の時刻を取得して一意のrun_nameを生成
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # config.pyの設定値をそのまま使用する
+    config_with_dataset = SimpleNamespace(**vars(config))
+    # run_nameだけは動的に生成
+    config_with_dataset.run_name = f"run_{timestamp}"
+    # num_samplesとsample_sizeはこのスクリプト専用の設定
+    config_with_dataset.num_samples = 100
+    config_with_dataset.sample_size = None
+    
+    return config_with_dataset
 
 
 def main():
     """
     Wave Networkモデルの学習と分析処理のメイン関数
-    コマンドライン引数で設定タイプを選択可能
     """
-    # コマンドライン引数のパース
+    # コマンドライン引数のパース (将来の拡張のために残しておく)
     parser = argparse.ArgumentParser(description='Wave Networkモデルの学習と分析')
-    parser.add_argument('--easy', action='store_true', help='easy_configを使用する (デフォルト)')
     parser.add_argument('--prod', action='store_true', help='本番用設定(config.py)を使用する')
-    parser.add_argument('--config', type=str, help='設定ファイルへのパス(easy_configの場合のみ)')
     args = parser.parse_args()
     
-    # フラグの矛盾をチェック
-    if args.easy and args.prod:
-        print("警告: --easyと--prodの両方が指定されています。--easyを優先します。")
-        use_easy_config = True
-    elif args.prod:
-        use_easy_config = False
-    else:
-        # デフォルトはeasy_config
-        use_easy_config = True
-    
-    # 選択された設定を読み込む
-    selected_config = get_selected_config(use_easy_config, args.config)
-    
-    # マージした設定を作成（必要な場合）
-    if use_easy_config:
-        import slm.config as config_module
-        training_config = merge_configs(selected_config, config_module)
-    else:
-        # 本番用設定の場合は、そのまま使用
-        training_config = selected_config
+    # 設定を読み込む
+    selected_config = get_selected_config()
+    training_config = selected_config
     
     # 環境設定
     try:
@@ -376,16 +282,17 @@ def main():
         model=model,
         train_dataset=train_dataset,
         valid_dataset=valid_dataset,
-        training_config=training_config,  # マージした本番用設定を使用
+        training_config=training_config,  # 設定を使用
         paths_config=paths_config,
         device=device
     )
     
     print("モデル学習を開始します...")
+    print(f"MLM学習エポック数: {training_config.mlm_epochs}, Diffusion学習エポック数: {training_config.diffusion_epochs}")
     
-    # MLM学習をスキップし、diffusion学習のみを実行
+    # config.pyの設定に従ってMLM学習を実行（mlm_epochs > 0の場合のみ）
     if training_config.mlm_epochs > 0:
-        # MLM学習（設定されている場合のみ実行）
+        # MLM学習
         print("\n===== MLM学習フェーズ =====")
         trainer.train_mlm()
         
@@ -393,9 +300,11 @@ def main():
         print("\n===== MLM学習後のバリデーション =====")
         val_loss = trainer.validate()
         print(f"MLM学習後の最終検証結果: Loss={val_loss:.4f}, Perplexity={torch.exp(torch.tensor(val_loss)).item():.2f}")
+    else:
+        print("\n===== MLM学習をスキップ（mlm_epochs=0） =====")
     
-    # diffusion学習（training_configにdiffusion_epochsが設定されている場合のみ実行）
-    if hasattr(training_config, 'diffusion_epochs') and training_config.diffusion_epochs > 0:
+    # config.pyの設定に従ってdiffusion学習を実行（diffusion_epochs > 0の場合のみ）
+    if training_config.diffusion_epochs > 0:
         print("\n===== Diffusion学習フェーズ =====")
         trainer.train_diffusion()
         
@@ -403,6 +312,8 @@ def main():
         print("\n===== Diffusion学習後のバリデーション =====")
         val_loss = trainer.validate()
         print(f"Diffusion学習後の最終検証結果: Loss={val_loss:.4f}, Perplexity={torch.exp(torch.tensor(val_loss)).item():.2f}")
+    else:
+        print("\n===== Diffusion学習をスキップ（diffusion_epochs=0） =====") 
     
     print("モデル学習が完了しました！")
     
