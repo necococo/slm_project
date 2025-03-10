@@ -109,13 +109,22 @@ class Trainer:
     def train_mlm(self, num_epochs: Optional[int] = None) -> None:
         """
         MLM（Masked Language Model）方式で学習を実行
+        Acceleratorを使用してTPU v5e-1に最適化
         """
         epochs = num_epochs or self.training_config.mlm_epochs
+        
+        # MLMエポックが0の場合はスキップ
+        if epochs == 0:
+            print("MLM epochs = 0, skipping MLM training")
+            return
         
         tokenizer = self.model.config.tokenizer
         if tokenizer is None:
             raise ValueError("model.config.tokenizerが設定されていません。")
 
+        # マスターランク確認（メインプロセスのみ出力）
+        is_main_process = self.accelerator.is_main_process
+        
         # Collator
         collator = CustomCollator(
             tokenizer=tokenizer,
@@ -126,62 +135,144 @@ class Trainer:
             qa=False
         )
         
+        # 固定バッチサイズ8を使用（TPU v5e-1向け）
+        batch_size = 8
+        if is_main_process:
+            print(f"MLM学習のバッチサイズを{batch_size}に固定")
+        
+        # DataLoaderを作成し、Acceleratorで準備
         dataloader = DataLoader(
             self.train_dataset,
-            batch_size=self.training_config.batch_size,
+            batch_size=batch_size,
             shuffle=True,
-            collate_fn=collator
+            collate_fn=collator,
+            num_workers=4,  # TPUではマルチプロセスデータロードが効果的
+            pin_memory=True  # データ転送を高速化
         )
+        dataloader = self.accelerator.prepare(dataloader)
         
         total_steps = 0
         start_time = time.time()
         
-        # tqdmのインポートを確保
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            # tqdmがない場合はダミーのtqdmを作成
-            def tqdm(iterable, **kwargs):
-                return iterable
+        # tqdmによるプログレスバー
+        from tqdm.auto import tqdm
         
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
             
-            # tqdmでラップしてプログレスバーを表示
-            for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"MLM Epoch {epoch+1}/{epochs}", leave=False)):
-                step_loss = self._mlm_train_step(batch, total_steps)
-                epoch_loss += step_loss
+            # tqdmはメインプロセスでのみ表示
+            progress_bar = tqdm(
+                dataloader, 
+                desc=f"MLM Epoch {epoch+1}/{epochs}", 
+                disable=not is_main_process
+            )
+            
+            self.model.train()
+            for batch_idx, batch in enumerate(progress_bar):
+                # Acceleratorを使用した学習ステップ
+                with self.accelerator.accumulate(self.model):
+                    # 新しいTPU対応学習ステップを呼び出す
+                    step_loss = self._mlm_train_step_accelerate(batch, total_steps)
+                    epoch_loss += step_loss
+                    
+                    # プログレスバーに現在の損失を表示
+                    progress_bar.set_postfix(loss=f"{step_loss:.4f}")
+                    
                 total_steps += 1
-                
-                if batch_idx % 10 == 0:
-                    print(f"Epoch {epoch+1}/{epochs} | Training Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
             
-            # エポック統計
-            avg_loss = epoch_loss / len(dataloader)
-            epoch_time = time.time() - epoch_start_time
-            print(f"Epoch {epoch+1}/{epochs} | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
-            self.writer.add_scalar("MLM/Epoch Loss", avg_loss, epoch)
-            self.writer.add_scalar("MLM/Epoch Time (s)", epoch_time, epoch)
+            # エポック統計（メインプロセスのみ）
+            if is_main_process:
+                avg_loss = epoch_loss / len(dataloader)
+                epoch_time = time.time() - epoch_start_time
+                print(f"MLM Epoch {epoch+1}/{epochs} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
+                self.writer.add_scalar("MLM/Epoch Loss", avg_loss, epoch)
+                self.writer.add_scalar("MLM/Epoch Time (s)", epoch_time, epoch)
             
-            # エポック終了後にスケジューラを1ステップ進める
+            # スケジューラを進める
             self.scheduler.step()
-            # 学習率を確認
-            current_lr = self.optimizer.param_groups[0]["lr"]
-            print(f"Current LR after scheduler step: {current_lr:.8f}")
+            
+            # 学習率を確認（メインプロセスのみ）
+            if is_main_process:
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                print(f"Current LR after scheduler step: {current_lr:.8f}")
             
             # Validation
             if self.valid_dataset:
                 val_loss = self.validate()
-                self.writer.add_scalar("MLM/Validation Loss", val_loss, epoch)
+                if is_main_process:
+                    self.writer.add_scalar("MLM/Validation Loss", val_loss, epoch)
             
-            # チェックポイント
+            # チェックポイント保存（メインプロセスのみ）
             if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
                 self.save_checkpoint(f"mlm_epoch_{epoch+1}")
 
-        total_time = time.time() - start_time
-        self.writer.add_scalar("MLM/Total Training Time (min)", total_time / 60, 0)
-        print(f"MLM training completed in {total_time / 60:.2f} minutes")
+        # 学習完了ログ（メインプロセスのみ）
+        if is_main_process:
+            total_time = time.time() - start_time
+            self.writer.add_scalar("MLM/Total Training Time (min)", total_time / 60, 0)
+            print(f"MLM training completed in {total_time / 60:.2f} minutes")
+
+    def _mlm_train_step_accelerate(self, batch: Dict[str, torch.Tensor], step: int) -> float:
+        """
+        Acceleratorを使用したMLM学習ステップ
+        TPU v5e-1向けに最適化
+        """
+        self.model.train()
+        
+        # 入力データ - Acceleratorが既にデバイスに配置済み
+        input_ids = batch["input_ids"]
+        labels = batch["labels"]
+        
+        # オプティマイザのゼロ勾配（Acceleratorが管理）
+        self.optimizer.zero_grad()
+        
+        # use_cut_cross_entropyフラグに基づいて処理を変更
+        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+            # Cut Cross Entropy用の処理 - TPU v5e-1向けにbfloat16を使用
+            with self.accelerator.autocast():
+                embeddings = self.model(input_ids)
+                classifier = self.model.get_classifier_weights()
+                # TPUではbfloat16に変換
+                if hasattr(torch, 'bfloat16'):
+                    embeddings = embeddings.to(torch.bfloat16)
+                    classifier = classifier.to(torch.bfloat16)
+                else:
+                    # bfloat16がない場合はfloat16を使用
+                    embeddings = embeddings.half()
+                    classifier = classifier.half()
+                loss = linear_cross_entropy(embeddings, classifier, labels)
+        else:
+            # 通常のCross Entropy用の処理
+            with self.accelerator.autocast():
+                logits = self.model(input_ids)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+        
+        # Acceleratorによる後方伝播
+        self.accelerator.backward(loss)
+        
+        # 勾配クリッピング（設定されている場合）
+        if hasattr(self.training_config, 'clip_value') and self.training_config.clip_value:
+            self.accelerator.clip_grad_norm_(self.model.parameters(), self.training_config.clip_value)
+        
+        # オプティマイザのステップ
+        self.optimizer.step()
+        
+        # ロギング（メインプロセスのみ）
+        if self.accelerator.is_main_process and step % 5 == 0:
+            # 損失値を集約
+            loss_value = self.accelerator.gather(loss).mean().item()
+            self.writer.add_scalar("MLM/Loss", loss_value, step)
+            
+            # TPU利用率などの代わりにモデルのFLOPsなど計算量の見積もりをロギング
+            est_flops = compute_flops_per_batch(self.model, input_ids.shape)
+            self.writer.add_scalar("System/Estimated TFLOPS", est_flops/1e12, step)
+        
+        # 損失値を返す前に集約（コミュニケーションコスト削減のため条件付き）
+        if step % 5 == 0:
+            return self.accelerator.gather(loss).mean().item()
+        else:
+            return loss.item()  # ローカルな損失値のみを返す
 
     def _mlm_train_step(self, batch: Dict[str, torch.Tensor], step: int) -> float:
         self.model.train()
@@ -426,6 +517,77 @@ class Trainer:
             self.writer.add_scalar("Diffusion/Total Training Time (min)", total_time / 60, 0)
             print(f"Diffusion training done in {total_time / 60:.2f} minutes")
 
+    def _diffusion_train_step_accelerate(self, batch: Dict[str, Any], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
+        """
+        Acceleratorを使用したDiffusion学習ステップ
+        TPU v5e-1向けに最適化
+        """
+        self.model.train()
+        
+        # input_idsとlabelsキーの存在確認 - Acceleratorは既にデバイスに配置済み
+        if "input_ids" in batch:
+            input_ids = batch["input_ids"]
+        elif "tokens" in batch:
+            input_ids = batch["tokens"]
+        else:
+            raise ValueError("バッチにinput_idsまたはtokensキーが存在しません")
+            
+        # ラベルの処理
+        if "labels" in batch:
+            labels = batch["labels"]
+        else:
+            # ラベルが提供されていない場合は、diffuserを使って生成する
+            # タイムステップをテンソルに変換してデバイスに配置
+            t_tensor = torch.tensor([t], device=self.accelerator.device)
+            noisy_tokens, labels = diffuser(input_ids.clone(), t_tensor)
+        
+        # オプティマイザのゼロ勾配（Acceleratorが管理）
+        self.optimizer.zero_grad()
+        
+        # use_cut_cross_entropyフラグに基づいて処理を変更
+        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+            # Cut Cross Entropy用の処理
+            # bfloat16の自動混合精度を使用
+            with self.accelerator.autocast():
+                embeddings = self.model(input_ids)
+                classifier = self.model.get_classifier_weights()
+                # TPUではbfloat16に変換
+                if hasattr(torch, 'bfloat16'):
+                    embeddings = embeddings.to(torch.bfloat16)
+                    classifier = classifier.to(torch.bfloat16)
+                else:
+                    # bfloat16がない場合はfloat16を使用
+                    embeddings = embeddings.half()
+                    classifier = classifier.half()
+                loss = linear_cross_entropy(embeddings, classifier, labels)
+        else:
+            # 通常のCross Entropy用の処理
+            with self.accelerator.autocast():
+                logits = self.model(input_ids)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+        
+        # Acceleratorによる後方伝播と最適化
+        self.accelerator.backward(loss)
+        
+        # 勾配クリッピング（設定されている場合）
+        if hasattr(self.training_config, 'clip_value') and self.training_config.clip_value:
+            self.accelerator.clip_grad_norm_(self.model.parameters(), self.training_config.clip_value)
+        
+        self.optimizer.step()
+        
+        # ロギング（メインプロセスのみ）
+        if self.accelerator.is_main_process and step % 5 == 0:
+            # 損失値を集約
+            loss_value = self.accelerator.gather(loss).mean().item()
+            self.writer.add_scalar("Diffusion/Loss", loss_value, step)
+            self.writer.add_scalar("Diffusion/Timestep", t, step)
+        
+        # 損失値を返す前に集約（コミュニケーションコスト削減のため条件付き）
+        if step % 5 == 0:
+            return self.accelerator.gather(loss).mean().item()
+        else:
+            return loss.item()  # ローカルな損失値のみを返す
+
     def _diffusion_train_step(self, batch: Dict[str, Any], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
         self.model.train()
         
@@ -502,16 +664,19 @@ class Trainer:
         return loss.item()
 
     def validate(self) -> float:
+        """
+        Acceleratorを使用したTPU v5e-1向け検証メソッド
+        """
         if not self.valid_dataset:
             return 0.0
+            
         self.model.eval()
         
-        # メモリを解放
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # マスターランク確認（メインプロセスのみ出力）
+        is_main_process = self.accelerator.is_main_process
         
-        # 検証用のバッチサイズは小さめに設定（OOM対策）
-        eval_batch_size = min(4, self.training_config.batch_size)
+        # 検証用のバッチサイズは固定8に（TPU v5e-1向け）
+        eval_batch_size = 8
         
         # カスタムコレータの取得
         tokenizer = self.model.config.tokenizer
@@ -524,114 +689,155 @@ class Trainer:
             qa=False
         )
         
+        # DataLoaderを作成し、Acceleratorで準備
         dataloader = DataLoader(
             self.valid_dataset,
-            batch_size=eval_batch_size,  # 小さめのバッチサイズを使用
+            batch_size=eval_batch_size, 
             shuffle=False,
-            collate_fn=collator
+            collate_fn=collator,
+            num_workers=4,  # TPUではマルチプロセスデータロードが効果的
+            pin_memory=True  # データ転送を高速化
         )
-        
-        # 検証中のメモリを監視（オプション）
-        max_memory_used = 0
-        if torch.cuda.is_available():
-            max_memory_used = torch.cuda.memory_allocated() / 1e6
+        dataloader = self.accelerator.prepare(dataloader)
         
         total_loss = 0.0
         total_batches = min(10, len(dataloader))  # 最大10バッチに制限
         
-        # tqdmのインポートを確保
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            # tqdmがない場合はダミーのtqdmを作成
-            def tqdm(iterable, **kwargs):
-                return iterable
+        # tqdmのプログレスバー
+        from tqdm.auto import tqdm
+        progress_bar = tqdm(
+            dataloader, 
+            desc="Validation", 
+            total=total_batches, 
+            disable=not is_main_process,
+            leave=False
+        )
         
         with torch.no_grad():
-            for i, batch in enumerate(tqdm(dataloader, desc="Validation", total=total_batches, leave=False)):
-                # 最大10バッチまでで終了（メモリ使用量を制限）
+            for i, batch in enumerate(progress_bar):
+                # 最大10バッチまでで終了
                 if i >= total_batches:
                     break
-                    
-                input_ids = batch["input_ids"].to(self.device)
-                labels = batch["labels"].to(self.device)
+                
+                # Acceleratorはbatchを既にデバイスに配置済み
+                input_ids = batch["input_ids"]
+                labels = batch["labels"]
                 
                 try:
-                    # AMPを使用
-                    if self.training_config.use_amp and torch.cuda.is_available():
-                        with torch.cuda.amp.autocast():
-                            # use_cut_cross_entropyフラグに基づいて処理を変更
-                            if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                                # Cut Cross Entropy用の処理
-                                embeddings = self.model(input_ids)
-                                classifier = self.model.get_classifier_weights()
-                                # 必ず半精度に変換（linear_cross_entropy の要件）
-                                embeddings = embeddings.half()
-                                classifier = classifier.half()
-                                loss = linear_cross_entropy(embeddings, classifier, labels)
-                            else:
-                                # 通常のCross Entropy用の処理
-                                logits = self.model(input_ids)
-                                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-                    else:
-                        # AMPなしの処理
-                        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                            # Cut Cross Entropy用の処理
+                    # use_cut_cross_entropyフラグに基づいて処理を変更
+                    if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
+                        # Cut Cross Entropy用の処理 - TPU v5e-1向けにbfloat16を使用
+                        with self.accelerator.autocast():
                             embeddings = self.model(input_ids)
                             classifier = self.model.get_classifier_weights()
-                            # 必ず半精度に変換（linear_cross_entropy の要件）
-                            embeddings = embeddings.half()
-                            classifier = classifier.half()
+                            # TPUではbfloat16に変換
+                            if hasattr(torch, 'bfloat16'):
+                                embeddings = embeddings.to(torch.bfloat16)
+                                classifier = classifier.to(torch.bfloat16)
+                            else:
+                                # bfloat16がない場合はfloat16を使用
+                                embeddings = embeddings.half()
+                                classifier = classifier.half()
                             loss = linear_cross_entropy(embeddings, classifier, labels)
-                        else:
-                            # 通常のCross Entropy用の処理
+                    else:
+                        # 通常のCross Entropy用の処理
+                        with self.accelerator.autocast():
                             logits = self.model(input_ids)
                             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
                     
+                    # 各プロセスで独立して損失を蓄積
                     total_loss += loss.item()
                     
-                    # メモリ使用量を監視
-                    if torch.cuda.is_available():
-                        current_memory = torch.cuda.memory_allocated() / 1e6
-                        max_memory_used = max(max_memory_used, current_memory)
+                    # プログレスバーに現在の損失を表示
+                    if is_main_process:
+                        progress_bar.set_postfix(loss=f"{loss.item():.4f}")
                         
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        print(f"WARNING: GPU ran out of memory during validation, using loss from {i} batches")
-                        if i == 0:
-                            # 最初のバッチでOOMが発生した場合、高い損失を返す
-                            return 100.0
-                        break
-                    else:
-                        raise e
-                
-                # バッチごとにメモリを解放
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                except Exception as e:
+                    if is_main_process:
+                        print(f"WARNING: Error during validation: {str(e)}")
+                    if i == 0:
+                        # 最初のバッチでエラーが発生した場合、高い損失を返す
+                        return 100.0
+                    break
         
         # 処理したバッチ数で割る
         processed_batches = min(i + 1, total_batches)
-        avg_loss = total_loss / processed_batches if processed_batches > 0 else 100.0
+        local_avg_loss = total_loss / processed_batches if processed_batches > 0 else 100.0
         
-        print(f"Validation Loss: {avg_loss:.4f} [Perplexity: {torch.exp(torch.tensor(avg_loss)).item():.2f}] (using {processed_batches} batches, max memory: {max_memory_used:.2f}MB)")
+        # 全プロセスで平均損失を集約
+        avg_loss_tensor = torch.tensor([local_avg_loss], device=self.accelerator.device)
+        gathered_loss = self.accelerator.gather(avg_loss_tensor)
+        avg_loss = gathered_loss.mean().item()
+        
+        # メインプロセスのみ出力
+        if is_main_process:
+            perplexity = torch.exp(torch.tensor(avg_loss)).item()
+            print(f"Validation Loss: {avg_loss:.4f} [Perplexity: {perplexity:.2f}] (using {processed_batches} batches)")
+        
         return avg_loss
 
     def save_checkpoint(self, name: str) -> None:
-        checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
-        checkpoint = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "model_config": self.model.config,
-        }
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved to {checkpoint_path}")
+        """
+        Acceleratorを使用したチェックポイント保存（TPU v5e-1対応）
+        メインプロセスのみがチェックポイントを保存
+        """
+        # メインプロセスのみが保存する
+        if self.accelerator.is_main_process:
+            checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
+            
+            # 通常のチェックポイント情報
+            checkpoint = {
+                "model_config": self.model.config,
+                "training_config": self.training_config,
+            }
+            
+            # Accelerator経由でモデルを抽出して保存
+            # unwrap_model()でDistributedDataParallelなどからモデルを取り出す
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            checkpoint["model_state_dict"] = unwrapped_model.state_dict()
+            
+            # オプティマイザは保存しないことも可能（TPU環境では省略することもある）
+            # 保存する場合はAcceleratorから取り出して保存
+            checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
+            
+            # 保存
+            torch.save(checkpoint, checkpoint_path)
+            print(f"Checkpoint saved to {checkpoint_path}")
+            
+        # 全プロセスが同期するのを待つ
+        self.accelerator.wait_for_everyone()
 
     def load_checkpoint(self, path: str) -> None:
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        print(f"Model loaded from {path}")
+        """
+        Acceleratorを使用したチェックポイント読み込み（TPU v5e-1対応）
+        """
+        # 全プロセスがロードする必要がある
+        checkpoint = torch.load(path, map_location=self.accelerator.device)
+        
+        # まずAcceleratorからオリジナルモデルを取得
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        
+        # 状態辞書をロード
+        unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
+        
+        # オプティマイザもロードする場合
+        if "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        
+        # メインプロセスのみが出力
+        if self.accelerator.is_main_process:
+            print(f"Model loaded from {path}")
+        
+        # 全プロセスが同期するのを待つ
+        self.accelerator.wait_for_everyone()
 
     def close(self) -> None:
-        self.writer.close()
-        print("TensorBoard writer closed and resources released")
+        """
+        リソースを解放
+        """
+        if self.accelerator.is_main_process:
+            self.writer.close()
+            print("TensorBoard writer closed and resources released")
+            
+        # 全プロセスが同期するのを待つ
+        self.accelerator.wait_for_everyone()
