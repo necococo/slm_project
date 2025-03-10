@@ -25,7 +25,7 @@ class ModelConfig:
     """
     def __init__(
         self,
-        hidden_size: int = 768,
+        hidden_size: int = 1024,
         num_layers: int = 3,
         vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
         max_seq_len: int = 512,
@@ -40,7 +40,7 @@ class ModelConfig:
         complex_init_scale: float = 0.02,  # 追加: 複素数初期化のスケール
         # 生体ゆらぎゲート機構の設定 (ハイパラ探索の最適値)
         use_bio_noise: bool = True,       # 生体ゆらぎを使用する (最適値)
-        noise_std: float = 0.09377424894583282,  # 生体ゆらぎの標準偏差（最適値）
+        noise_std: float = 0.1,  # 生体ゆらぎの標準偏差（最適値）
         trainable_noise: bool = False,    # ノイズスケールを固定（最適値）
     ) -> None:
         self.hidden_size = hidden_size
@@ -101,11 +101,11 @@ class TrainingConfig:
     """
     def __init__(
         self,
-        learning_rate: float = 1e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
-        batch_size: int = 96,
+        learning_rate: float = 2e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
+        batch_size: int = 32,
         mlm_epochs: int = 0,  # MLM学習をスキップ
         mlm_probability: float = 0.2,
-        diffusion_epochs: int = 5,  # diffusion学習のみを実行
+        diffusion_epochs: int = 3,  # diffusion学習のみを実行
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
         accumulation_steps: int = 1,  # 勾配累積ステップ数
