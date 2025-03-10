@@ -34,44 +34,30 @@ import math
 import matplotlib.pyplot as plt
 from datasets import load_dataset, load_from_disk, Dataset, DatasetDict
 
-# PyTorch XLAとtransformersの競合回避のための事前準備
+# 必要なライブラリの安全なインポート
+# グローバル変数宣言
+AutoTokenizer = None
+AutoModel = None
+
 def safe_import_transformers():
     """
     transformersライブラリを安全にインポートする
-    PyTorch XLAが読み込まれている場合は一時的に無効化
     """
-    # torch_xlaモジュールが既にインポートされているか確認
-    torch_xla_loaded = 'torch_xla' in sys.modules
-    torch_xla_modules = {}
+    global AutoTokenizer, AutoModel
     
-    # torch_xlaが読み込まれている場合、一時的に無効化
-    if torch_xla_loaded:
-        print("PyTorch XLAモジュールを一時的に無効化してtransformersをロード中...")
-        # 現在ロードされているtorch_xla関連モジュールを保存
-        for name in list(sys.modules.keys()):
-            if name.startswith('torch_xla'):
-                torch_xla_modules[name] = sys.modules[name]
-                del sys.modules[name]
-    
-    # transformersをインポート
     try:
-        from transformers import AutoTokenizer, AutoModel
+        # transformersをインポート
+        from transformers import AutoTokenizer as AT, AutoModel as AM
+        AutoTokenizer = AT
+        AutoModel = AM
         print("transformersのインポートに成功しました")
-        # グローバル名前空間にエクスポート
-        globals()['AutoTokenizer'] = AutoTokenizer
-        globals()['AutoModel'] = AutoModel
+        return True
     except Exception as e:
         print(f"transformersのインポート中にエラーが発生しました: {e}")
-        raise
-    finally:
-        # torch_xlaモジュールを復元
-        if torch_xla_loaded:
-            for name, module in torch_xla_modules.items():
-                sys.modules[name] = module
-            print("PyTorch XLAモジュールを復元しました")
+        return False
 
-# トークナイザー用のtransformersライブラリをインポート
-safe_import_transformers()
+# トークナイザー用のtransformersライブラリをインポート - 失敗してもプログラムは継続
+success = safe_import_transformers()
 
 # プロジェクトのルートディレクトリをPythonパスに追加
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -228,16 +214,25 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
             # ag_newsの場合
             if 'text' in dataset.features:
                 def tokenize_function(examples):
-                    return tokenizer(
-                        examples['text'],
+                    """バッチ処理されたテキストをトークン化する関数"""
+                    # 入力テキストのリスト
+                    texts = examples['text']
+                    
+                    # トークナイザーを使って処理
+                    result = tokenizer(
+                        texts,
                         truncation=True,
                         max_length=model_config.max_seq_len,
                         padding='max_length'
                     )
+                    
+                    # datasets.mapには必ず辞書を返す
+                    return result
                 return dataset.map(tokenize_function, batched=True)
             elif 'description' in dataset.features:
                 # ag_news用
                 def tokenize_function(examples):
+                    """バッチ処理されたタイトルと説明を結合してトークン化する関数"""
                     # タイトルと説明を結合
                     texts = []
                     for i in range(len(examples['description'])):
@@ -245,12 +240,16 @@ def prepare_data_for_training(dataset, tokenizer, model_config, batch_size=16, s
                         desc = examples['description'][i]
                         texts.append(title + " " + desc if title else desc)
                     
-                    return tokenizer(
+                    # トークナイザーを使って処理
+                    result = tokenizer(
                         texts,
                         truncation=True,
                         max_length=model_config.max_seq_len,
                         padding='max_length'
                     )
+                    
+                    # datasets.mapには必ず辞書を返す
+                    return result
                 return dataset.map(tokenize_function, batched=True)
             # 既に前処理されている場合は何もしない
             return dataset
@@ -581,29 +580,28 @@ def create_model_from_params(trial: optuna.trial.Trial,
     # トークナイザの設定
     tokenizer_name = base_config.get('model_name', 'bert-base-uncased')
     
-    # PyTorch XLAとTransformersの競合を避けるため、再度safe_importを実行
-    torch_xla_loaded = 'torch_xla' in sys.modules
-    if torch_xla_loaded:
-        # 一時的にtorch_xlaを無効化してトークナイザーのみをロード
-        torch_xla_modules = {}
-        for name in list(sys.modules.keys()):
-            if name.startswith('torch_xla'):
-                torch_xla_modules[name] = sys.modules[name]
-                del sys.modules[name]
-                
     try:
-        # トークナイザーをロード - キャッシュからの読み込みを優先
-        # transformersをまだインポートしていない場合に備えて再度チェック
-        if 'AutoTokenizer' not in globals():
-            from transformers import AutoTokenizer
-            
-        # オフラインモードを有効にして高速化（キャッシュからのみロード）
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, 
-            local_files_only=True,  # キャッシュが存在する場合のみ利用
-            use_fast=True           # 高速トークナイザーを使用
-        )
-        print(f"トークナイザー {tokenizer_name} をロードしました。語彙数: {tokenizer.vocab_size}")
+        # グローバル変数のAutoTokenizerが利用可能か確認
+        if AutoTokenizer is not None:
+            # オフラインモードを有効にして高速化（キャッシュからのみロード）
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    tokenizer_name, 
+                    local_files_only=True,  # キャッシュが存在する場合のみ利用
+                    use_fast=True           # 高速トークナイザーを使用
+                )
+                print(f"トークナイザー {tokenizer_name} をロードしました。語彙数: {tokenizer.vocab_size}")
+            except Exception as e:
+                print(f"キャッシュからのトークナイザー読み込みに失敗しました: {e}")
+                try:
+                    # オンラインでのロードを試みる
+                    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+                    print(f"オンラインからトークナイザー {tokenizer_name} をロードしました。語彙数: {tokenizer.vocab_size}")
+                except Exception as e2:
+                    print(f"オンラインからのトークナイザー読み込みにも失敗しました: {e2}")
+                    raise
+        else:
+            raise ImportError("AutoTokenizer is not available")
     except Exception as e:
         print(f"トークナイザーロード中にエラーが発生しました: {e}")
         print("シンプルな独自トークナイザーを使用します")
@@ -615,11 +613,14 @@ def create_model_from_params(trial: optuna.trial.Trial,
                 self.mask_token_id = 103  # BERT互換
                 
             def __call__(self, texts, **kwargs):
-                """簡易トークン化 - 実際は文字単位やスペース区切りなど"""
+                """簡易トークン化 - batch処理に対応したdatasets互換の実装"""
                 if isinstance(texts, str):
                     texts = [texts]
+                    
+                # バッチ処理のための配列
+                all_input_ids = []
+                all_attention_masks = []
                 
-                results = []
                 for text in texts:
                     # スペースで区切って単純なトークン化
                     tokens = text.split()
@@ -640,23 +641,21 @@ def create_model_from_params(trial: optuna.trial.Trial,
                         if len(attention_mask) < max_len:
                             attention_mask = attention_mask + [0] * (max_len - len(attention_mask))
                     
-                    # 戻り値を構築
-                    result = {
-                        'input_ids': token_ids,
-                        'attention_mask': attention_mask
-                    }
-                    
-                    # PyTorchテンソルに変換（要求された場合）
-                    if kwargs.get('return_tensors', '') == 'pt':
-                        import torch
-                        result = {k: torch.tensor(v) for k, v in result.items()}
-                    
-                    results.append(result)
+                    all_input_ids.append(token_ids)
+                    all_attention_masks.append(attention_mask)
                 
-                # バッチサイズ1の場合は最初の要素を返す
-                if len(results) == 1 and isinstance(texts, str):
-                    return results[0]
-                return results
+                # datasets.mapでは常に辞書を返す必要がある
+                result = {
+                    'input_ids': all_input_ids,
+                    'attention_mask': all_attention_masks
+                }
+                
+                # PyTorchテンソルに変換（要求された場合）
+                if kwargs.get('return_tensors', '') == 'pt':
+                    import torch
+                    result = {k: torch.tensor(v) for k, v in result.items()}
+                    
+                return result
         
         # 独自のシンプルなトークナイザーを使用
         tokenizer = SimpleTokenizer()
