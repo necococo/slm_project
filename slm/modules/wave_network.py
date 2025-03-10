@@ -423,31 +423,31 @@ class WaveletEnhancedNetworkBlock(nn.Module):
         return None
 
 
-# 従来のWaveNetworkBlockクラスを保持（互換性のため）
-class WaveNetworkBlock(WaveletEnhancedNetworkBlock):
-    """
-    生体ゆらぎ機能を統合したWave Network Block の実装
-    """
-    def __init__(
-        self, 
-        hidden_size: int, 
-        dropout_prob: float = 0.1,
-        use_rope: bool = True,
-        max_seq_len: int = 2048,
-        noise_std: float = 0.1,
-        use_bio_noise: bool = True,
-        trainable_noise: bool = True
-    ):
-        super().__init__(
-            hidden_size=hidden_size, 
-            dropout_prob=dropout_prob,
-            use_rope=use_rope,
-            max_seq_len=max_seq_len,
-            noise_std=noise_std,
-            use_bio_noise=use_bio_noise,
-            trainable_noise=trainable_noise,
-            use_wavelet=False  # デフォルトではウェーブレットを使用しない
-        )
+# # 従来のWaveNetworkBlockクラスを保持（互換性のため）
+# class WaveNetworkBlock(WaveletEnhancedNetworkBlock):
+#     """
+#     生体ゆらぎ機能を統合したWave Network Block の実装
+#     """
+#     def __init__(
+#         self, 
+#         hidden_size: int, 
+#         dropout_prob: float = 0.1,
+#         use_rope: bool = True,
+#         max_seq_len: int = 2048,
+#         noise_std: float = 0.1,
+#         use_bio_noise: bool = True,
+#         trainable_noise: bool = True
+#     ):
+#         super().__init__(
+#             hidden_size=hidden_size, 
+#             dropout_prob=dropout_prob,
+#             use_rope=use_rope,
+#             max_seq_len=max_seq_len,
+#             noise_std=noise_std,
+#             use_bio_noise=use_bio_noise,
+#             trainable_noise=trainable_noise,
+#             use_wavelet=False  # デフォルトではウェーブレットを使用しない
+        # )
 
 # WaveNetworkLMクラスに生体ゆらぎとウェーブレット変換機能を統合
 class WaveNetworkLM(nn.Module):

@@ -13,6 +13,10 @@ from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Optional, Tuple, Union, Any, List
 from cut_cross_entropy import linear_cross_entropy
 
+# Accelerateをインポート
+from accelerate import Accelerator
+from accelerate.utils import set_seed
+
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.diffusion import SimpleTextDiffusion
@@ -34,18 +38,31 @@ class Trainer:
         valid_dataset: Optional[Dataset] = None,
         training_config: Optional[TrainingConfig] = None,
         paths_config: Optional[PathsConfig] = None,
-        device: torch.device = None
+        device: torch.device = None,
+        seed: int = 42
     ):
-        self.model = model
+        # ランダムシードを設定して再現性を確保
+        set_seed(seed)
+        
+        # Acceleratorの初期化 - TPU v5e-1向け設定
+        self.accelerator = Accelerator(
+            mixed_precision="bf16",  # TPUではbf16が最適
+            gradient_accumulation_steps=1,
+            log_with=None,  # TensorBoardを自分で管理
+            project_config=None
+        )
+        
         self.train_dataset = train_dataset
         self.valid_dataset = valid_dataset
         self.training_config = training_config or TrainingConfig()
         self.paths_config = paths_config or PathsConfig()
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # モデルを通常のfloat32のままGPUへ (model.half()はしない)
-        self.model.to(self.device)
-
+        
+        # deviceはAcceleratorが管理するため、直接指定しなくてOK
+        self.device = self.accelerator.device
+        print(f"Acceleratorデバイス: {self.device}")
+        
+        self.model = model
+        
         # ディレクトリ準備
         os.makedirs(self.paths_config.log_dir, exist_ok=True)
         os.makedirs(self.paths_config.checkpoint_dir, exist_ok=True)
@@ -55,11 +72,8 @@ class Trainer:
         # TensorBoard
         self.writer = SummaryWriter(log_dir=self.paths_config.log_dir)
         
-        # 学習率調整（NaN対策に小さめ）
+        # 学習率調整
         learning_rate = self.training_config.learning_rate
-        # if learning_rate > 1e-5:
-        #     print(f"WARNING: Lowering learning rate from {learning_rate} to 1e-5 for stability")
-        #     learning_rate = 1e-5
 
         # Optimizer を AdamW に変更
         self.optimizer = AdamW(
@@ -69,15 +83,20 @@ class Trainer:
             eps=1e-5
         )
         
-        # 追加: CosineAnnealingLR スケジューラの初期化
+        # スケジューラの初期化
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, 
-            T_max=self.training_config.mlm_epochs,  # ここは必要に応じて調整
+            T_max=max(self.training_config.mlm_epochs, self.training_config.diffusion_epochs, 1),
             eta_min=1e-6
         )
         
-        # AMP用のGradScaler
-        self.scaler = torch.amp.GradScaler('cuda') if (self.device.type == 'cuda' and self.training_config.use_amp) else None
+        # AMPはAcceleratorが管理するためscalerは不要
+        self.scaler = None
+        
+        # Acceleratorによるモデルとオプティマイザの準備
+        self.model, self.optimizer, self.scheduler = self.accelerator.prepare(
+            self.model, self.optimizer, self.scheduler
+        )
         
         self._log_model_info()
         
@@ -291,7 +310,7 @@ class Trainer:
 
     def train_diffusion(self, num_epochs: Optional[int] = None) -> None:
         """
-        拡散モデル方式でFine-tuning
+        拡散モデル方式でFine-tuning - TPU v5e-1 + Accelerateを使用
         """
         epochs = num_epochs or self.training_config.diffusion_epochs
         if epochs == 0:
@@ -305,11 +324,13 @@ class Trainer:
             if hasattr(self.model.config.tokenizer, 'mask_token_id'):
                 mask_token_id = self.model.config.tokenizer.mask_token_id
             
+        # diffuserもacceleratorで準備
         diffuser = SimpleTextDiffusion(
             timesteps=20, 
             mask_token_id=mask_token_id, 
             vocab_size=vocab_size
-        ).to(self.device)
+        )
+        diffuser = self.accelerator.prepare(diffuser)
         
         # diffusion学習用のカスタムコレーターを使用
         try:
@@ -334,54 +355,76 @@ class Trainer:
             print(f"コレーターの初期化中にエラーが発生しました: {e}")
             collator = None
         
+        # 固定バッチサイズ8を使用
+        batch_size = 8
+        print(f"Diffusion学習のバッチサイズを{batch_size}に固定")
+        
+        # DataLoaderを作成し、Acceleratorで準備
         dataloader = DataLoader(
             self.train_dataset,
-            batch_size=self.training_config.batch_size,
+            batch_size=batch_size,
             shuffle=True,
-            collate_fn=collator
+            collate_fn=collator,
+            num_workers=4,  # TPUではマルチプロセスデータロードが効果的
+            pin_memory=True  # データ転送を高速化
         )
+        dataloader = self.accelerator.prepare(dataloader)
         
         total_steps = 0
         start_time = time.time()
         
-        # tqdmのインポートを確保（すでにインポート済みの場合はスキップ）
-        if 'tqdm' not in locals():
-            try:
-                from tqdm.auto import tqdm
-            except ImportError:
-                # tqdmがない場合はダミーのtqdmを作成
-                def tqdm(iterable, **kwargs):
-                    return iterable
+        # Accelerate組み込みのプログレスバーを使用
+        from tqdm.auto import tqdm
+        
+        # Accelerator用のマスターランク確認（メインプロセスのみ出力）
+        is_main_process = self.accelerator.is_main_process
         
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
             
-            # tqdmでラップしてプログレスバーを表示
-            for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Diffusion Epoch {epoch+1}/{epochs}", leave=False)):
+            # tqdmはAcceleratorと組み合わせて使用
+            progress_bar = tqdm(
+                dataloader, 
+                desc=f"Diffusion Epoch {epoch+1}/{epochs}", 
+                disable=not is_main_process
+            )
+            
+            self.model.train()
+            for batch_idx, batch in enumerate(progress_bar):
+                # タイムステップをランダムに選択
                 t = torch.randint(0, diffuser.timesteps, (1,)).item()
-                step_loss = self._diffusion_train_step(batch, diffuser, t, total_steps)
-                epoch_loss += step_loss
+                
+                # Acceleratorを使用した学習ステップ
+                with self.accelerator.accumulate(self.model):
+                    step_loss = self._diffusion_train_step_accelerate(batch, diffuser, t, total_steps)
+                    epoch_loss += step_loss
+                    
+                    # プログレスバーに現在の損失を表示
+                    progress_bar.set_postfix(loss=f"{step_loss:.4f}")
+
                 total_steps += 1
 
-                if batch_idx % 10 == 0:
-                    print(f"Diffusion Epoch {epoch+1}/{epochs} | Training Batch {batch_idx}/{len(dataloader)} | Loss: {step_loss:.4f}")
-
-            avg_loss = epoch_loss / len(dataloader)
-            epoch_time = time.time() - epoch_start_time
-            print(f"Diffusion Epoch {epoch+1}/{epochs} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
-            self.writer.add_scalar("Diffusion/Epoch Loss", avg_loss, epoch)
-            self.writer.add_scalar("Diffusion/Epoch Time (s)", epoch_time, epoch)
+            # エポック統計（メインプロセスのみ）
+            if is_main_process:
+                avg_loss = epoch_loss / len(dataloader)
+                epoch_time = time.time() - epoch_start_time
+                print(f"Diffusion Epoch {epoch+1}/{epochs} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
+                self.writer.add_scalar("Diffusion/Epoch Loss", avg_loss, epoch)
+                self.writer.add_scalar("Diffusion/Epoch Time (s)", epoch_time, epoch)
             
-            # エポック終了後にスケジューラを1ステップ進める
+            # スケジューラを進める
             self.scheduler.step()
             
-            if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
+            # チェックポイント保存（メインプロセスのみ）
+            if is_main_process and ((epoch + 1) % 5 == 0 or epoch == epochs - 1):
                 self.save_checkpoint(f"diffusion_epoch_{epoch+1}")
         
-        total_time = time.time() - start_time
-        self.writer.add_scalar("Diffusion/Total Training Time (min)", total_time / 60, 0)
-        print(f"Diffusion training done in {total_time / 60:.2f} minutes")
+        # 学習完了（メインプロセスのみ）
+        if is_main_process:
+            total_time = time.time() - start_time
+            self.writer.add_scalar("Diffusion/Total Training Time (min)", total_time / 60, 0)
+            print(f"Diffusion training done in {total_time / 60:.2f} minutes")
 
     def _diffusion_train_step(self, batch: Dict[str, Any], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
         self.model.train()
