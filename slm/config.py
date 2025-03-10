@@ -148,7 +148,7 @@ class PathsConfig:
     def __init__(
         self,
         base_dir: str = os.getcwd(),  # カレントディレクトリを基準
-        dataset_name: str = "default_dataset",
+        dataset_name: str = "shunk031/JGLUE",
         dataset_subset: Optional[str] = None,
         tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking",
         output_dir: Optional[str] = None,
