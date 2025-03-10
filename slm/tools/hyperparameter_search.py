@@ -270,19 +270,19 @@ class HyperparameterSearchConfig:
     # 探索するパラメータの範囲
     param_ranges: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
         'learning_rate': (2e-5, 1e-4),         # 学習率の範囲を制限
-        'weight_decay': (1e-4, 1e-4),          # 固定値 0.0001
+        # 'weight_decay': (1e-4, 1e-4),          # 固定値 0.0001
     })
     
     # 整数パラメータの範囲
     int_ranges: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
-        'warmup_steps': (500, 500),            # 固定値 500
+        # 'warmup_steps': (500, 500),            # 固定値 500
     })
     
     # カテゴリカルパラメータ
     categorical_params: Dict[str, List[Any]] = field(default_factory=lambda: {
         'num_layers': [1, 3],                  # Wave Networkのレイヤー数を1または3に制限
         'batch_size': [4, 8, 16],              # バッチサイズ候補を制限
-        'clip_value': [1.0],                   # 勾配クリップ値を固定
+        # 'clip_value': [1.0],                   # 勾配クリップ値を固定
     })
     
     # デバッグ用に明示的に設定を出力
@@ -470,8 +470,12 @@ def create_model_from_params(trial: optuna.trial.Trial,
         warmup_steps = trial.suggest_int('warmup_steps', *int_ranges['warmup_steps'])
     else:
         warmup_steps = 500  # 固定値
-        
-    weight_decay = trial.suggest_float('weight_decay', *param_ranges['weight_decay'], log=True)
+    
+     # 連続パラメータのサンプリング
+    if 'weight_decay' in param_ranges:
+        weight_decay = trial.suggest_float('weight_decay', *param_ranges['weight_decay'], log=True)
+    else:
+        weight_decay = 0.0001  # デフォルト値
     
     # MLM確率も同様にチェック
     if 'mlm_probability' in param_ranges:
