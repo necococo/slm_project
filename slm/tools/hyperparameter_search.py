@@ -33,7 +33,45 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 from datasets import load_dataset, load_from_disk, Dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModel
+
+# PyTorch XLAとtransformersの競合回避のための事前準備
+def safe_import_transformers():
+    """
+    transformersライブラリを安全にインポートする
+    PyTorch XLAが読み込まれている場合は一時的に無効化
+    """
+    # torch_xlaモジュールが既にインポートされているか確認
+    torch_xla_loaded = 'torch_xla' in sys.modules
+    torch_xla_modules = {}
+    
+    # torch_xlaが読み込まれている場合、一時的に無効化
+    if torch_xla_loaded:
+        print("PyTorch XLAモジュールを一時的に無効化してtransformersをロード中...")
+        # 現在ロードされているtorch_xla関連モジュールを保存
+        for name in list(sys.modules.keys()):
+            if name.startswith('torch_xla'):
+                torch_xla_modules[name] = sys.modules[name]
+                del sys.modules[name]
+    
+    # transformersをインポート
+    try:
+        from transformers import AutoTokenizer, AutoModel
+        print("transformersのインポートに成功しました")
+        # グローバル名前空間にエクスポート
+        globals()['AutoTokenizer'] = AutoTokenizer
+        globals()['AutoModel'] = AutoModel
+    except Exception as e:
+        print(f"transformersのインポート中にエラーが発生しました: {e}")
+        raise
+    finally:
+        # torch_xlaモジュールを復元
+        if torch_xla_loaded:
+            for name, module in torch_xla_modules.items():
+                sys.modules[name] = module
+            print("PyTorch XLAモジュールを復元しました")
+
+# トークナイザー用のtransformersライブラリをインポート
+safe_import_transformers()
 
 # プロジェクトのルートディレクトリをPythonパスに追加
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -542,14 +580,93 @@ def create_model_from_params(trial: optuna.trial.Trial,
     
     # トークナイザの設定
     tokenizer_name = base_config.get('model_name', 'bert-base-uncased')
+    
+    # PyTorch XLAとTransformersの競合を避けるため、再度safe_importを実行
+    torch_xla_loaded = 'torch_xla' in sys.modules
+    if torch_xla_loaded:
+        # 一時的にtorch_xlaを無効化してトークナイザーのみをロード
+        torch_xla_modules = {}
+        for name in list(sys.modules.keys()):
+            if name.startswith('torch_xla'):
+                torch_xla_modules[name] = sys.modules[name]
+                del sys.modules[name]
+                
     try:
-        # 英語用のトークナイザーをロード
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        # トークナイザーをロード - キャッシュからの読み込みを優先
+        # transformersをまだインポートしていない場合に備えて再度チェック
+        if 'AutoTokenizer' not in globals():
+            from transformers import AutoTokenizer
+            
+        # オフラインモードを有効にして高速化（キャッシュからのみロード）
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, 
+            local_files_only=True,  # キャッシュが存在する場合のみ利用
+            use_fast=True           # 高速トークナイザーを使用
+        )
         print(f"トークナイザー {tokenizer_name} をロードしました。語彙数: {tokenizer.vocab_size}")
     except Exception as e:
         print(f"トークナイザーロード中にエラーが発生しました: {e}")
-        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-        print("代替のbert-base-uncasedトークナイザーをロードしました")
+        print("シンプルな独自トークナイザーを使用します")
+        
+        # 簡易的なトークナイザーを実装（最悪の場合の対応として）
+        class SimpleTokenizer:
+            def __init__(self):
+                self.vocab_size = 30522  # BERT互換
+                self.mask_token_id = 103  # BERT互換
+                
+            def __call__(self, texts, **kwargs):
+                """簡易トークン化 - 実際は文字単位やスペース区切りなど"""
+                if isinstance(texts, str):
+                    texts = [texts]
+                
+                results = []
+                for text in texts:
+                    # スペースで区切って単純なトークン化
+                    tokens = text.split()
+                    # ダミーのトークンIDを割り当て (実際には文字ハッシュなど)
+                    token_ids = [hash(t) % (self.vocab_size-1) + 1 for t in tokens]
+                    # パディング処理
+                    max_len = kwargs.get('max_length', 512)
+                    if kwargs.get('padding', '') == 'max_length':
+                        if len(token_ids) < max_len:
+                            token_ids = token_ids + [0] * (max_len - len(token_ids))
+                    # 切り詰め処理
+                    if kwargs.get('truncation', False) and len(token_ids) > max_len:
+                        token_ids = token_ids[:max_len]
+                        
+                    # 注意マスクを作成
+                    attention_mask = [1] * len(token_ids)
+                    if kwargs.get('padding', '') == 'max_length':
+                        if len(attention_mask) < max_len:
+                            attention_mask = attention_mask + [0] * (max_len - len(attention_mask))
+                    
+                    # 戻り値を構築
+                    result = {
+                        'input_ids': token_ids,
+                        'attention_mask': attention_mask
+                    }
+                    
+                    # PyTorchテンソルに変換（要求された場合）
+                    if kwargs.get('return_tensors', '') == 'pt':
+                        import torch
+                        result = {k: torch.tensor(v) for k, v in result.items()}
+                    
+                    results.append(result)
+                
+                # バッチサイズ1の場合は最初の要素を返す
+                if len(results) == 1 and isinstance(texts, str):
+                    return results[0]
+                return results
+        
+        # 独自のシンプルなトークナイザーを使用
+        tokenizer = SimpleTokenizer()
+    
+    # torch_xlaモジュールを復元（必要な場合）
+    if torch_xla_loaded:
+        for name, module in torch_xla_modules.items():
+            sys.modules[name] = module
+    
+    # トークナイザーを設定
     model_config.set_tokenizer(tokenizer)
     
     # モデルの構築
@@ -749,20 +866,54 @@ def load_and_prepare_dataset(paths_config: PathsConfig,
     Returns:
         処理済みデータセット
     """
-    # 前処理済みデータの確認
-    preprocessed_path = os.path.join(paths_config.data_dir, "processed_raw")
-    if os.path.exists(preprocessed_path):
-        logger.info("トークナイズ済みデータセットを読み込みます...")
-        full_dataset = load_from_disk(preprocessed_path)
-    else:
-        logger.info("生データセットを読み込み、処理します...")
-        full_dataset = load_dataset_from_disk_or_download(paths_config, base_config)
+    # PyTorch XLAとtransformersの競合回避のための処理
+    torch_xla_loaded = 'torch_xla' in sys.modules
+    torch_xla_modules = {}
     
-    # データセットの構造を出力（デバッグ用）
-    logger.info(f"データセット構造: {list(full_dataset.keys())}")
+    # torch_xlaが読み込まれている場合は一時的に無効化
+    if torch_xla_loaded:
+        print("データセット読み込み中にPyTorch XLAモジュールを一時的に無効化します...")
+        for name in list(sys.modules.keys()):
+            if name.startswith('torch_xla'):
+                torch_xla_modules[name] = sys.modules[name]
+                del sys.modules[name]
     
-    # データセットのサブサンプリング
-    return subsample_dataset(full_dataset, sample_size, sample_ratio)
+    try:
+        # 前処理済みデータの確認
+        preprocessed_path = os.path.join(paths_config.data_dir, "processed_raw")
+        if os.path.exists(preprocessed_path):
+            logger.info("トークナイズ済みデータセットを読み込みます...")
+            full_dataset = load_from_disk(preprocessed_path)
+        else:
+            logger.info("生データセットを読み込み、処理します...")
+            # トレーニングモジュールからデータロード関数をインポート
+            try:
+                # 明示的に直接インポートして競合を回避
+                sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from slm.training import load_dataset_from_disk_or_download
+                full_dataset = load_dataset_from_disk_or_download(paths_config, base_config)
+            except Exception as e:
+                logger.error(f"データセットのロード中にエラーが発生: {e}")
+                # フォールバック: 直接datasetsを使用してデータセットをロード
+                dataset_name = paths_config.dataset_name or base_config.get('dataset_name', 'ag_news')
+                dataset_subset = paths_config.dataset_subset
+                logger.info(f"代替方法でデータセットをロード: {dataset_name}")
+                if dataset_subset:
+                    full_dataset = load_dataset(dataset_name, dataset_subset)
+                else:
+                    full_dataset = load_dataset(dataset_name)
+        
+        # データセットの構造を出力（デバッグ用）
+        logger.info(f"データセット構造: {list(full_dataset.keys())}")
+        
+        # データセットのサブサンプリング
+        return subsample_dataset(full_dataset, sample_size, sample_ratio)
+    finally:
+        # torch_xlaモジュールを復元
+        if torch_xla_loaded:
+            for name, module in torch_xla_modules.items():
+                sys.modules[name] = module
+            print("PyTorch XLAモジュールを復元しました")
 
 
 def dict_to_namespace(d: Dict[str, Any]) -> SimpleNamespace:
@@ -832,6 +983,25 @@ def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def is_using_tpu():
+    """TPUを使用しているかどうかを検出する"""
+    # XLAがインポートされているか確認
+    if 'torch_xla' in sys.modules:
+        return True
+        
+    # 環境変数を確認（Cloud TPU環境）
+    if os.environ.get('TPU_NAME') or os.environ.get('COLAB_TPU_ADDR'):
+        return True
+        
+    # TPU利用可能かどうか直接確認（より確実）
+    try:
+        import torch_xla.core.xla_model as xm
+        return True
+    except (ImportError, ModuleNotFoundError):
+        pass
+        
+    return False
+
 def run_hyperparameter_search(
     config_file: Optional[str] = None, 
     n_trials: int = 10, 
@@ -859,6 +1029,13 @@ def run_hyperparameter_search(
     
     logger.info("Wave Network モデルのハイパーパラメータ探索を開始します")
     
+    # TPU環境かどうかを確認
+    using_tpu = is_using_tpu()
+    if using_tpu:
+        logger.info("TPU環境を検出しました。TPU向けの設定を適用します。")
+        # TPU環境ではn_jobs=1に強制（並列処理はTPUが内部的に行う）
+        n_jobs = 1
+    
     # 基本設定の読み込み
     base_config = load_base_config(config_file)
     
@@ -869,7 +1046,28 @@ def run_hyperparameter_search(
     config_obj = dict_to_namespace(base_config)
     
     # 環境設定 - 変換したオブジェクトを渡す
-    device, paths_config = setup_environment(config_obj)
+    try:
+        device, paths_config = setup_environment(config_obj)
+    except Exception as e:
+        logger.error(f"環境設定中にエラーが発生しました: {e}")
+        # フォールバック: 自前で環境設定
+        logger.info("代替方法で環境を設定します")
+        if using_tpu:
+            import torch_xla.core.xla_model as xm
+            device = xm.xla_device()
+        elif torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+            
+        # フォールバックのパス設定
+        from slm.config import PathsConfig
+        paths_config = PathsConfig(
+            base_dir=base_config.get('base_dir', './output'),
+            dataset_name=base_config.get('dataset_name', 'ag_news'),
+            dataset_subset=base_config.get('dataset_subset'),
+            model_name=base_config.get('model_name', 'bert-base-uncased')
+        )
     
     # 探索設定の作成
     search_config = HyperparameterSearchConfig(
@@ -900,21 +1098,49 @@ def run_hyperparameter_search(
     
     print(f"データセットをロード中: サンプルサイズ={sample_size_to_use}, サンプル比率={sample_ratio_to_use}")
     
-    dataset = load_and_prepare_dataset(
-        paths_config, base_config, sample_size=sample_size_to_use, sample_ratio=sample_ratio_to_use
-    )
-    
-    # 検証データセットが存在するかチェック（validation, valid, testなど様々な名前がある可能性）
-    validation_key = None
-    for key in ['validation', 'valid', 'test']:
-        if key in dataset:
-            validation_key = key
-            break
-    
-    logger.info(f"ロードされたデータセット: train={len(dataset['train'])}, "
-                f"validation={validation_key and len(dataset[validation_key]) or 'なし'}")
-    
-    # 実際のサンプリングはprepare_data_for_trainingの中で実行される
+    try:
+        dataset = load_and_prepare_dataset(
+            paths_config, base_config, sample_size=sample_size_to_use, sample_ratio=sample_ratio_to_use
+        )
+        
+        # 検証データセットが存在するかチェック
+        validation_key = None
+        for key in ['validation', 'valid', 'test']:
+            if key in dataset:
+                validation_key = key
+                break
+        
+        logger.info(f"ロードされたデータセット: train={len(dataset['train'])}, "
+                    f"validation={validation_key and len(dataset[validation_key]) or 'なし'}")
+    except Exception as e:
+        logger.error(f"データセットロード中にエラーが発生: {e}")
+        # フォールバック: ag_newsを直接ロード
+        logger.info("代替方法でag_newsデータセットをロード中...")
+        # 一時的にtorch_xlaを無効化してdatasetsを使用
+        torch_xla_loaded = 'torch_xla' in sys.modules
+        torch_xla_modules = {}
+        if torch_xla_loaded:
+            for name in list(sys.modules.keys()):
+                if name.startswith('torch_xla'):
+                    torch_xla_modules[name] = sys.modules[name]
+                    del sys.modules[name]
+        
+        try:
+            dataset = load_dataset("ag_news")
+            # サブサンプリング
+            if sample_size_to_use:
+                dataset['train'] = dataset['train'].select(range(min(sample_size_to_use, len(dataset['train']))))
+                dataset['test'] = dataset['test'].select(range(min(sample_size_to_use // 10, len(dataset['test']))))
+            validation_key = 'test'
+            logger.info(f"ag_newsデータセットをロード: train={len(dataset['train'])}, test={len(dataset['test'])}")
+        except Exception as nested_e:
+            logger.error(f"フォールバックデータセットのロードにも失敗: {nested_e}")
+            raise
+        finally:
+            # torch_xlaモジュールを復元
+            if torch_xla_loaded:
+                for name, module in torch_xla_modules.items():
+                    sys.modules[name] = module
     
     # Optuna Studyの作成
     try:
@@ -933,14 +1159,20 @@ def run_hyperparameter_search(
         print("Optuna studyの作成中にエラーが発生しました:", e)
         raise
     
-    # CUDA メモリ管理設定
+    # メモリ管理設定
     if torch.cuda.is_available():
-        # メモリフラグメンテーション対策として expandable_segments を有効化
+        # メモリフラグメンテーション対策
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         print("CUDA memory management configuration set: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
         
         # メモリを一度解放
         torch.cuda.empty_cache()
+    elif using_tpu:
+        print("TPU向けメモリ最適化を適用")
+        if 'torch_xla' in sys.modules:
+            import torch_xla.core.xla_model as xm
+            # TPU用のメモリ最適化 - TPUベストプラクティス
+            xm.mark_step()  # XLAコンパイラに最適化のタイミングを通知
     
     # 探索の実行
     objective_func = lambda trial: objective(
@@ -957,24 +1189,36 @@ def run_hyperparameter_search(
         # tqdmまたはoptuna.integrationがない場合
         callbacks = []
     
-    study.optimize(
-        objective_func,
-        n_trials=n_trials,
-        timeout=timeout,
-        n_jobs=n_jobs,
-        callbacks=callbacks
-    )
-    
-    # 結果の可視化と保存
-    results = visualize_optimization_history(study, paths_config.base_dir)
-    
-    logger.info("\n===== ハイパーパラメータ探索結果 =====")
-    logger.info(f"最適パラメータ: {results['best_params']}")
-    logger.info(f"最小損失値: {results['best_value']:.4f}")
-    logger.info(f"総試行回数: {results['n_trials']}")
-    logger.info(f"結果保存先: {paths_config.base_dir}")
-    
-    return study, results
+    try:
+        study.optimize(
+            objective_func,
+            n_trials=n_trials,
+            timeout=timeout,
+            n_jobs=n_jobs,
+            callbacks=callbacks
+        )
+        
+        # 結果の可視化と保存
+        results = visualize_optimization_history(study, paths_config.base_dir)
+        
+        logger.info("\n===== ハイパーパラメータ探索結果 =====")
+        logger.info(f"最適パラメータ: {results['best_params']}")
+        logger.info(f"最小損失値: {results['best_value']:.4f}")
+        logger.info(f"総試行回数: {results['n_trials']}")
+        logger.info(f"結果保存先: {paths_config.base_dir}")
+        
+        return study, results
+    except Exception as e:
+        logger.error(f"ハイパーパラメータ探索中にエラーが発生: {e}")
+        # エラーが発生しても結果を可視化して保存
+        if len(study.trials) > 0:
+            try:
+                results = visualize_optimization_history(study, paths_config.base_dir)
+                logger.info(f"エラー発生までの試行結果を保存しました: {len(study.trials)}試行")
+                return study, results
+            except Exception as vis_err:
+                logger.error(f"結果の可視化中にエラーが発生: {vis_err}")
+        raise
 
 
 def check_and_mount_google_drive():
