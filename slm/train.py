@@ -320,16 +320,16 @@ class Trainer:
                 print("警告: tokenizer が None です。デフォルトのコレーターを使用します。")
                 collator = None
             else:
-                # diffusion学習用のカスタムコレーター
+                # diffusion学習用のカスタムコレーター - マスキングはDiffusionが行うので無効化
                 collator = CustomCollator(
                     tokenizer=tokenizer,
                     model_config=self.model.config,
-                    mlm=True,  # マスキングを有効化
-                    mlm_probability=self.training_config.mlm_probability,
+                    mlm=False,  # マスキングを無効化（Diffusionが行う）
+                    mlm_probability=0.0,  # マスキング確率を0に
                     mask_token_id=mask_token_id,
                     qa=False
                 )
-                print(f"Diffusion学習用のカスタムコレーターを初期化しました。マスク確率: {self.training_config.mlm_probability}")
+                print(f"Diffusion学習用のカスタムコレーターを初期化しました。コレーターのマスキングは無効です。")
         except Exception as e:
             print(f"コレーターの初期化中にエラーが発生しました: {e}")
             collator = None
