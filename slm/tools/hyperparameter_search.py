@@ -481,7 +481,7 @@ def visualize_optimization_history(study: optuna.study.Study, output_dir: str) -
 def create_model_from_params(trial: optuna.trial.Trial, 
                             search_config: HyperparameterSearchConfig, 
                             base_config: Dict[str, Any], 
-                            device: torch.device) -> Tuple[WaveNetworkLM, AutoTokenizer, ModelConfig, TrainingConfig]:
+                            device: torch.device) -> Tuple[WaveNetworkLM, Any, ModelConfig, TrainingConfig]:
     """
     トライアルパラメータからモデルと設定を作成する
     
@@ -494,6 +494,7 @@ def create_model_from_params(trial: optuna.trial.Trial,
     Returns:
         モデル、トークナイザ、モデル設定、トレーニング設定のタプル
     """
+    # TPU関連のコードを削除（必要ない）
     # ハイパーパラメータのサンプリング
     param_ranges = search_config.param_ranges
     int_ranges = search_config.int_ranges
@@ -659,11 +660,6 @@ def create_model_from_params(trial: optuna.trial.Trial,
         
         # 独自のシンプルなトークナイザーを使用
         tokenizer = SimpleTokenizer()
-    
-    # torch_xlaモジュールを復元（必要な場合）
-    if torch_xla_loaded:
-        for name, module in torch_xla_modules.items():
-            sys.modules[name] = module
     
     # トークナイザーを設定
     model_config.set_tokenizer(tokenizer)
@@ -865,17 +861,7 @@ def load_and_prepare_dataset(paths_config: PathsConfig,
     Returns:
         処理済みデータセット
     """
-    # PyTorch XLAとtransformersの競合回避のための処理
-    torch_xla_loaded = 'torch_xla' in sys.modules
-    torch_xla_modules = {}
-    
-    # torch_xlaが読み込まれている場合は一時的に無効化
-    if torch_xla_loaded:
-        print("データセット読み込み中にPyTorch XLAモジュールを一時的に無効化します...")
-        for name in list(sys.modules.keys()):
-            if name.startswith('torch_xla'):
-                torch_xla_modules[name] = sys.modules[name]
-                del sys.modules[name]
+    # TPUは使用しないため、XLA関連の処理は不要
     
     try:
         # 前処理済みデータの確認
@@ -908,11 +894,8 @@ def load_and_prepare_dataset(paths_config: PathsConfig,
         # データセットのサブサンプリング
         return subsample_dataset(full_dataset, sample_size, sample_ratio)
     finally:
-        # torch_xlaモジュールを復元
-        if torch_xla_loaded:
-            for name, module in torch_xla_modules.items():
-                sys.modules[name] = module
-            print("PyTorch XLAモジュールを復元しました")
+        # TPUは使用しないため、XLA関連の処理は不要
+        pass
 
 
 def dict_to_namespace(d: Dict[str, Any]) -> SimpleNamespace:
@@ -984,21 +967,7 @@ def ensure_required_config_keys(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def is_using_tpu():
     """TPUを使用しているかどうかを検出する"""
-    # XLAがインポートされているか確認
-    if 'torch_xla' in sys.modules:
-        return True
-        
-    # 環境変数を確認（Cloud TPU環境）
-    if os.environ.get('TPU_NAME') or os.environ.get('COLAB_TPU_ADDR'):
-        return True
-        
-    # TPU利用可能かどうか直接確認（より確実）
-    try:
-        import torch_xla.core.xla_model as xm
-        return True
-    except (ImportError, ModuleNotFoundError):
-        pass
-        
+    # TPUは使用しないため常にFalseを返す
     return False
 
 def run_hyperparameter_search(
@@ -1028,12 +997,8 @@ def run_hyperparameter_search(
     
     logger.info("Wave Network モデルのハイパーパラメータ探索を開始します")
     
-    # TPU環境かどうかを確認
-    using_tpu = is_using_tpu()
-    if using_tpu:
-        logger.info("TPU環境を検出しました。TPU向けの設定を適用します。")
-        # TPU環境ではn_jobs=1に強制（並列処理はTPUが内部的に行う）
-        n_jobs = 1
+    # TPUは使用しない
+    using_tpu = False
     
     # 基本設定の読み込み
     base_config = load_base_config(config_file)
@@ -1051,10 +1016,7 @@ def run_hyperparameter_search(
         logger.error(f"環境設定中にエラーが発生しました: {e}")
         # フォールバック: 自前で環境設定
         logger.info("代替方法で環境を設定します")
-        if using_tpu:
-            import torch_xla.core.xla_model as xm
-            device = xm.xla_device()
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             device = torch.device("cuda")
         else:
             device = torch.device("cpu")
@@ -1115,14 +1077,6 @@ def run_hyperparameter_search(
         logger.error(f"データセットロード中にエラーが発生: {e}")
         # フォールバック: ag_newsを直接ロード
         logger.info("代替方法でag_newsデータセットをロード中...")
-        # 一時的にtorch_xlaを無効化してdatasetsを使用
-        torch_xla_loaded = 'torch_xla' in sys.modules
-        torch_xla_modules = {}
-        if torch_xla_loaded:
-            for name in list(sys.modules.keys()):
-                if name.startswith('torch_xla'):
-                    torch_xla_modules[name] = sys.modules[name]
-                    del sys.modules[name]
         
         try:
             dataset = load_dataset("ag_news")
@@ -1135,11 +1089,6 @@ def run_hyperparameter_search(
         except Exception as nested_e:
             logger.error(f"フォールバックデータセットのロードにも失敗: {nested_e}")
             raise
-        finally:
-            # torch_xlaモジュールを復元
-            if torch_xla_loaded:
-                for name, module in torch_xla_modules.items():
-                    sys.modules[name] = module
     
     # Optuna Studyの作成
     try:
@@ -1166,12 +1115,7 @@ def run_hyperparameter_search(
         
         # メモリを一度解放
         torch.cuda.empty_cache()
-    elif using_tpu:
-        print("TPU向けメモリ最適化を適用")
-        if 'torch_xla' in sys.modules:
-            import torch_xla.core.xla_model as xm
-            # TPU用のメモリ最適化 - TPUベストプラクティス
-            xm.mark_step()  # XLAコンパイラに最適化のタイミングを通知
+    # TPUは使用しないためこのセクションは不要
     
     # 探索の実行
     objective_func = lambda trial: objective(
