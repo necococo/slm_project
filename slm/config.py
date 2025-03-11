@@ -151,7 +151,7 @@ class PathsConfig:
         base_dir: str = os.getcwd(),  # カレントディレクトリを基準
         dataset_name: str = "NINJAL/NWJC",  # NINJAL Web Japanese Corpus
         dataset_subset: Optional[str] = None,
-        tokenizer_name: str = "cl-tohoku/bert-base-japanese-whole-word-masking",
+        tokenizer_name: str = "megagonlabs/t5-base-japanese-web",  # 日本語Webテキスト向けに最適化されたT5ベースのトークナイザー
         output_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
         run_name: Optional[str] = None
