@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import os
+import sys
 import argparse
 import torch
 from torch.utils.data import DataLoader
@@ -111,6 +112,13 @@ def load_tokenizer_megagon(tokenizer_name):
     else:
         print(f"既存のマスクトークン: {hf_tokenizer.mask_token}")
     
+    # BOSトークンの追加（必要に応じて）
+    if not hasattr(hf_tokenizer, 'bos_token') or hf_tokenizer.bos_token is None:
+        hf_tokenizer.add_special_tokens({'bos_token': '<s>'})
+        print(f"BOSトークン '<s>' を追加しました。")
+    else:
+        print(f"既存のBOSトークン: {hf_tokenizer.bos_token}")
+    
     # マスクトークンIDを確認
     mask_token_id = hf_tokenizer.mask_token_id
     print(f"マスクトークンID: {mask_token_id}")
@@ -128,6 +136,7 @@ def load_tokenizer_megagon(tokenizer_name):
     return jp_tokenizer
 
 def main():
+    # コマンドライン引数を解析
     args = parse_args()
     
     # 乱数シード設定
@@ -139,7 +148,13 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Google Colab環境の検出
-    is_colab = 'google.colab' in str(get_ipython()) if 'get_ipython' in globals() else False
+    try:
+        import google.colab
+        is_colab = True
+        print("Google Colab環境で実行中")
+    except ImportError:
+        is_colab = False
+        print("ローカル環境で実行中")
     
     # トークナイザーのロード
     tokenizer = load_tokenizer_megagon(args.tokenizer_name)
@@ -152,7 +167,13 @@ def main():
         print(f"ローカルデータセットを使用: {args.local_data_dir}")
         # ローカルデータセットの読み込み
         from datasets import load_from_disk
-        dataset = load_from_disk(args.local_data_dir)
+        try:
+            dataset = load_from_disk(args.local_data_dir)
+            print("データセットを正常にロードしました")
+        except Exception as e:
+            print(f"ローカルデータセットのロードに失敗しました: {e}")
+            print("Hugging Faceからデータセットをロードします...")
+            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, args.max_seq_len)
     else:
         # Hugging Faceからデータセットを準備
         dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, args.max_seq_len)
@@ -224,7 +245,13 @@ def main():
         print(f"トークンID: {tokens_ids}")
     
     # デコード
-    decoded_text = tokenizer.decode(tokens_ids)
+    try:
+        decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
+    except TypeError:
+        # 引数エラーの場合は通常のデコードを行い、手動で特殊トークンを削除
+        decoded_text = tokenizer.decode(tokens_ids)
+        decoded_text = decoded_text.replace("</s>", "").replace("<s>", "")
+    
     print(f"デコード結果: {decoded_text}")
     
     # 特殊トークンの確認
@@ -235,16 +262,23 @@ def main():
     # トレーニングデータの最初のバッチをチェック
     print("\n=== トレーニングデータのサンプル ===")
     if "train" in dataset:
-        sample_batch = next(iter(dataset["train"].take(1)))
-        print(f"バッチの形状: {sample_batch['input_ids'].shape if hasattr(sample_batch['input_ids'], 'shape') else len(sample_batch['input_ids'])}")
+        # 最初のサンプルを取得
+        sample = dataset["train"][0]
+        print(f"サンプルの形状: {len(sample['input_ids']) if 'input_ids' in sample else 'Unknown'}")
         
-        # 最初のサンプルのトークンIDを表示
-        sample_ids = sample_batch['input_ids'][0]
-        print(f"サンプルのトークンID (最初の20個): {sample_ids[:20]}")
-        
-        # トークンIDをデコードして表示
-        sample_text = tokenizer.decode(sample_ids)
-        print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
+        if 'input_ids' in sample:
+            # 最初のサンプルのトークンIDを表示
+            sample_ids = sample['input_ids']
+            print(f"サンプルのトークンID (最初の20個): {sample_ids[:20]}")
+            
+            # トークンIDをデコードして表示
+            try:
+                sample_text = tokenizer.decode(sample_ids, skip_special_tokens=True)
+            except TypeError:
+                sample_text = tokenizer.decode(sample_ids)
+                sample_text = sample_text.replace("</s>", "").replace("<s>", "")
+            
+            print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
     else:
         print("トレーニングデータセットが見つかりません")
     
@@ -258,7 +292,6 @@ def main():
         
         # AMP（Automatic Mixed Precision）の確認
         if hasattr(training_config, 'use_amp') and training_config.use_amp:
-            import torch.cuda
             if not torch.cuda.is_available():
                 print("GPUが利用できないため、AMPを無効にします")
                 training_config.use_amp = False
@@ -266,26 +299,31 @@ def main():
         print("Google Colab環境向けに設定を最適化しました")
     
     # トレーナーの初期化
-    trainer = Trainer(
-        model=model,
-        train_dataset=dataset["train"],
-        valid_dataset=dataset["validation"] if "validation" in dataset else None,
-        training_config=training_config,
-        paths_config=paths_config,
-        seed=args.seed
-    )
-    
-    # Diffusion訓練の実行
-    print("Diffusionモデルの学習を開始します...")
-    trainer.train_diffusion()
-    
-    # 最終チェックポイントの保存
-    trainer.save_checkpoint("final_model")
-    
-    # リソースの解放
-    trainer.close()
-    
-    print("学習が完了しました。最終モデルが保存されました。")
+    try:
+        trainer = Trainer(
+            model=model,
+            train_dataset=dataset["train"],
+            valid_dataset=dataset["validation"] if "validation" in dataset else None,
+            training_config=training_config,
+            paths_config=paths_config,
+            seed=args.seed
+        )
+        
+        # Diffusion訓練の実行
+        print("Diffusionモデルの学習を開始します...")
+        trainer.train_diffusion()
+        
+        # 最終チェックポイントの保存
+        trainer.save_checkpoint("final_model")
+        
+        # リソースの解放
+        trainer.close()
+        
+        print("学習が完了しました。最終モデルが保存されました。")
+    except Exception as e:
+        print(f"トレーニング中にエラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
