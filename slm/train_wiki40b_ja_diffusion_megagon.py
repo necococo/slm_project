@@ -103,19 +103,27 @@ def load_tokenizer_megagon(tokenizer_name):
     # まずHuggingFaceからロード
     hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     
+    # T5トークナイザーにはデフォルトのマスクトークンがないため、必要に応じて追加
+    if not hasattr(hf_tokenizer, 'mask_token') or hf_tokenizer.mask_token is None:
+        # マスクトークンの追加
+        hf_tokenizer.add_special_tokens({'mask_token': '<mask>'})
+        print(f"マスクトークン '<mask>' を追加しました。")
+    else:
+        print(f"既存のマスクトークン: {hf_tokenizer.mask_token}")
+    
+    # マスクトークンIDを確認
+    mask_token_id = hf_tokenizer.mask_token_id
+    print(f"マスクトークンID: {mask_token_id}")
+    
     # JapaneseTokenizerラッパーに変換
     jp_tokenizer = JapaneseTokenizer.from_pretrained_tokenizer(hf_tokenizer)
     
     print(f"トークナイザーをロードしました。語彙サイズ: {len(hf_tokenizer.vocab) if hasattr(hf_tokenizer, 'vocab') else hf_tokenizer.vocab_size}")
     
-    # トークナイザーの設定をJapaneseTokenizerに反映
-    if hasattr(hf_tokenizer, 'mask_token'):
-        jp_tokenizer.mask_token = hf_tokenizer.mask_token
-        print(f"マスクトークン: {jp_tokenizer.mask_token}")
-    
-    if hasattr(hf_tokenizer, 'mask_token_id'):
-        jp_tokenizer.mask_token_id = hf_tokenizer.mask_token_id
-        print(f"マスクトークンID: {jp_tokenizer.mask_token_id}")
+    # トークナイザーの設定をJapaneseTokenizerに反映（マスクトークンなど）
+    jp_tokenizer.mask_token = hf_tokenizer.mask_token
+    jp_tokenizer.mask_token_id = hf_tokenizer.mask_token_id
+    print(f"JapaneseTokenizerのマスクトークン: {jp_tokenizer.mask_token}, ID: {jp_tokenizer.mask_token_id}")
     
     return jp_tokenizer
 
