@@ -209,6 +209,45 @@ def main():
     param_count = sum(p.numel() for p in model.parameters())
     print(f"モデルを初期化しました。パラメータ数: {param_count:,}")
     
+    # トークナイザーの動作確認
+    print("\n=== トークナイザーの動作確認 ===")
+    test_text = "これはトークナイザーのテストです。日本語Wikipediaで学習されたモデルを使います。"
+    print(f"テスト文: {test_text}")
+    
+    # トークン化
+    tokens_ids = tokenizer.encode(test_text)
+    if hasattr(tokenizer, '_tokenizer') and hasattr(tokenizer._tokenizer, 'convert_ids_to_tokens'):
+        tokens_str = tokenizer._tokenizer.convert_ids_to_tokens(tokens_ids)
+        print(f"トークンID: {tokens_ids}")
+        print(f"トークン: {tokens_str}")
+    else:
+        print(f"トークンID: {tokens_ids}")
+    
+    # デコード
+    decoded_text = tokenizer.decode(tokens_ids)
+    print(f"デコード結果: {decoded_text}")
+    
+    # 特殊トークンの確認
+    print(f"\n特殊トークン情報:")
+    print(f"  MASK: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+    print(f"  語彙サイズ: {len(tokenizer._tokenizer.vocab) if hasattr(tokenizer, '_tokenizer') and hasattr(tokenizer._tokenizer, 'vocab') else tokenizer._tokenizer.vocab_size if hasattr(tokenizer, '_tokenizer') else 'Unknown'}")
+    
+    # トレーニングデータの最初のバッチをチェック
+    print("\n=== トレーニングデータのサンプル ===")
+    if "train" in dataset:
+        sample_batch = next(iter(dataset["train"].take(1)))
+        print(f"バッチの形状: {sample_batch['input_ids'].shape if hasattr(sample_batch['input_ids'], 'shape') else len(sample_batch['input_ids'])}")
+        
+        # 最初のサンプルのトークンIDを表示
+        sample_ids = sample_batch['input_ids'][0]
+        print(f"サンプルのトークンID (最初の20個): {sample_ids[:20]}")
+        
+        # トークンIDをデコードして表示
+        sample_text = tokenizer.decode(sample_ids)
+        print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
+    else:
+        print("トレーニングデータセットが見つかりません")
+    
     # Colab環境の場合、メモリ使用量や各種設定を調整
     if is_colab:
         # バッチサイズの調整

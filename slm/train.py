@@ -470,6 +470,57 @@ class Trainer:
         # Accelerator用のマスターランク確認（メインプロセスのみ出力）
         is_main_process = self.accelerator.is_main_process
         
+        # 学習開始前にトークナイザーとデータの簡単な確認（最初のエポックのみ）
+        if is_main_process:
+            try:
+                print("\n=== 学習開始前のトークナイザーとデータ確認 ===")
+                # DataLoaderから最初のバッチを取得
+                sample_batch = next(iter(dataloader))
+                
+                # モデルのトークナイザー情報を取得
+                tokenizer = self.model.config.tokenizer if hasattr(self.model.config, 'tokenizer') else None
+                
+                if tokenizer is not None:
+                    # マスクトークンの確認
+                    print(f"マスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+                    
+                    # バッチの形状確認
+                    print(f"バッチの形状: input_ids={sample_batch['input_ids'].shape}, "
+                          f"attention_mask={sample_batch['attention_mask'].shape if 'attention_mask' in sample_batch else 'なし'}, "
+                          f"labels={sample_batch['labels'].shape if 'labels' in sample_batch else 'なし'}")
+                    
+                    # サンプルデータの表示（最初の例）
+                    if 'input_ids' in sample_batch:
+                        sample_ids = sample_batch['input_ids'][0].cpu().tolist()
+                        print(f"サンプルのトークンID (最初の20個): {sample_ids[:20]}")
+                        
+                        # トークンIDをデコードして表示
+                        sample_text = tokenizer.decode(sample_ids)
+                        print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
+                        
+                        # Diffusionモデルの場合、ノイズを追加した例も表示
+                        if self.diffusion is not None:
+                            print("\nDiffusionノイズ追加テスト:")
+                            # 最大ノイズレベル（タイムステップ）で
+                            t = torch.tensor([self.diffusion.timesteps - 1], device=sample_batch['input_ids'].device)
+                            noisy_ids, _ = self.diffusion(sample_batch['input_ids'][:1], t)
+                            
+                            # ノイズが追加されたトークンを表示
+                            noisy_ids_list = noisy_ids[0].cpu().tolist()
+                            print(f"ノイズ追加後のトークンID (最初の20個): {noisy_ids_list[:20]}")
+                            
+                            # マスクの数を確認
+                            mask_count = noisy_ids_list.count(tokenizer.mask_token_id)
+                            print(f"マスクトークンの数: {mask_count} / {len(noisy_ids_list)} ({mask_count/len(noisy_ids_list)*100:.1f}%)")
+                            
+                            # デコード結果
+                            noisy_text = tokenizer.decode(noisy_ids_list)
+                            print(f"ノイズ追加後テキスト: {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
+                else:
+                    print("トークナイザー情報が取得できません")
+            except Exception as e:
+                print(f"データ確認中にエラーが発生しました: {e}")
+        
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
@@ -523,6 +574,30 @@ class Trainer:
         TPU v5e-1向けに最適化
         """
         self.model.train()
+        
+        # 定期的なサンプルチェック (250ステップごと)
+        if self.accelerator.is_main_process and step % 250 == 0:
+            try:
+                tokenizer = self.model.config.tokenizer
+                if tokenizer and diffuser:
+                    print(f"\n--- ステップ {step} サンプル生成テスト ---")
+                    # 入力サンプルを取得
+                    sample_ids = batch["input_ids"][0].cpu().tolist()
+                    sample_text = tokenizer.decode(sample_ids)
+                    print(f"元のテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
+                    
+                    # ノイズ追加
+                    t_max = torch.tensor([diffuser.timesteps - 1], device=batch["input_ids"].device)
+                    noisy_ids, _ = diffuser(batch["input_ids"][:1], t_max)
+                    noisy_text = tokenizer.decode(noisy_ids[0].cpu().tolist())
+                    print(f"ノイズ後: {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
+                    
+                    # マスク率を計算
+                    mask_count = noisy_ids[0].cpu().tolist().count(tokenizer.mask_token_id)
+                    total_tokens = len(noisy_ids[0])
+                    print(f"マスク率: {mask_count}/{total_tokens} ({mask_count/total_tokens*100:.1f}%)")
+            except Exception as e:
+                print(f"サンプルチェック中にエラー: {e}")
         
         # input_idsとlabelsキーの存在確認 - Acceleratorは既にデバイスに配置済み
         if "input_ids" in batch:
