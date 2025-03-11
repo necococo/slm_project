@@ -22,7 +22,7 @@ if parent_dir not in sys.path:
 
 from slm.config import ModelConfig
 from slm.modules.wave_network import WaveNetworkLM
-from slm.tokenizer import JapaneseTokenizer
+# 標準のトークナイザーを使用するのでJapaneseTokenizerは不要
 from slm.diffusion import SimpleTextDiffusion
 
 
@@ -72,25 +72,22 @@ def load_tokenizer(tokenizer_name):
     """トークナイザーをロードする関数"""
     print(f"トークナイザー {tokenizer_name} をロード中...")
     
-    # まずHuggingFaceからロード
-    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    # HuggingFaceからロード
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     
     # マスクトークンの追加（T5トークナイザーには必要に応じて）
-    if not hasattr(hf_tokenizer, 'mask_token') or hf_tokenizer.mask_token is None:
-        hf_tokenizer.add_special_tokens({'mask_token': '<mask>'})
+    if not hasattr(tokenizer, 'mask_token') or tokenizer.mask_token is None:
+        tokenizer.add_special_tokens({'mask_token': '<mask>'})
         print(f"マスクトークン '<mask>' を追加しました。")
     
     # BOSトークンの追加（必要に応じて）
-    if not hasattr(hf_tokenizer, 'bos_token') or hf_tokenizer.bos_token is None:
-        hf_tokenizer.add_special_tokens({'bos_token': '<s>'})
+    if not hasattr(tokenizer, 'bos_token') or tokenizer.bos_token is None:
+        tokenizer.add_special_tokens({'bos_token': '<s>'})
         print(f"BOSトークン '<s>' を追加しました。")
     
-    # JapaneseTokenizerラッパーに変換
-    jp_tokenizer = JapaneseTokenizer.from_pretrained_tokenizer(hf_tokenizer)
+    print(f"トークナイザーをロードしました。語彙サイズ: {len(tokenizer.vocab) if hasattr(tokenizer, 'vocab') else tokenizer.vocab_size}")
     
-    print(f"トークナイザーをロードしました。語彙サイズ: {len(hf_tokenizer.vocab) if hasattr(hf_tokenizer, 'vocab') else hf_tokenizer.vocab_size}")
-    
-    return jp_tokenizer, hf_tokenizer
+    return tokenizer
 
 
 def load_model(model_path, tokenizer):
@@ -108,7 +105,7 @@ def load_model(model_path, tokenizer):
             model_config = ModelConfig(
                 hidden_size=1024,
                 num_layers=3,
-                vocab_size=tokenizer._tokenizer.vocab_size,
+                vocab_size=tokenizer.vocab_size,
                 max_seq_len=512,
                 dropout_prob=0.1,
                 use_rope=True,
@@ -432,7 +429,7 @@ def main():
     np.random.seed(args.seed)
     
     # トークナイザーのロード
-    tokenizer, hf_tokenizer = load_tokenizer(args.tokenizer_name)
+    tokenizer = load_tokenizer(args.tokenizer_name)
     
     # モデルのロード
     model = load_model(args.model_path, tokenizer)

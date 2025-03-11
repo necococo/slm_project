@@ -342,7 +342,7 @@ def train_tokenizer(train_path: str, valid_path: str, data_dir: str, model_prefi
 
 def test_load_tokenizer():
     """トークナイザのロードをテストする関数"""
-    data_dir = "/content/drive/MyDrive/slm/data/wiki40b_ja"
+    data_dir = "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja"
     model_prefix = "sp_jwiki"
     tokenizer = load_tokenizer(data_dir, model_prefix)
     assert isinstance(tokenizer, spm.SentencePieceProcessor)
@@ -416,7 +416,7 @@ def create_dataloader(dataset_path: str, tokenizer: spm.SentencePieceProcessor,
 
 if __name__ == "__main__":
     # Google Drive上の保存先ディレクトリ（適宜変更してください）
-    data_dir: str = "/content/drive/MyDrive/slm/data/wiki40b_ja"
+    data_dir: str = "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja"
     model_prefix: str = "sp_jwiki"
     
     # データセットの準備（必要な場合のみ実行）

@@ -2,7 +2,7 @@
 
 ```
 from datasets import load_dataset
-dataset = load_dataset("toramaru-u/wiki40b-ja")
+dataset = load_dataset("fujiki/wiki40b_ja") --> fujiki/wiki40b_ja
 
 # megagonlabs/t5-base-japanese-web トークナイザーをロード
 from transformers import AutoTokenizer
@@ -11,7 +11,7 @@ from slm.tokenizer import JapaneseTokenizer # JapaneseTokenizerラッパーに�
 jp_tokenizer = JapaneseTokenizer.from_pretrained_tokenizer(hf_tokenizer)
 
 >>>
-トークナイザーを保存しました: /content/drive/MyDrive/slm/data/wiki40b_ja/tokenizer
+トークナイザーを保存しました: /content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/tokenizer
 ```
 
 トークナイザー情報:megagonlabs/t5-base-japanese-web
@@ -24,22 +24,22 @@ BOS: \<s> # 文の始まりトークンを一応入れた
 
 
   # データプロセッサーのテスト
-  python -m tests.test_data_processor --dataset_path=/content/drive/MyDrive/slm/data/wiki40b_ja/train
+  python -m tests.test_data_processor --dataset_path=/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/train
 
   # Diffusionモデルのテスト
-  python -m tests.test_simple_diffusion --dataset_path=/content/drive/MyDrive/slm/data/wiki40b_ja/train
+  python -m tests.test_simple_diffusion --dataset_path=/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/train
 
 
 
   # データセット準備
   python slm/train_wiki40b_ja_diffusion_megagon_fixed2.py \
       --prepare_datasets \
-      --local_data_dir="/content/drive/MyDrive/slm/data/wiki40b_ja"
+      --local_data_dir="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja"
 
   # トレーニング実行
   python slm/train_wiki40b_ja_diffusion_megagon_fixed2.py \
       --use_local_dataset \
-      --local_data_dir="/content/drive/MyDrive/slm/data/wiki40b_ja" \
+      --local_data_dir="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja" \
       --output_dir="/content/drive/MyDrive/slm/outputs"
 
 
