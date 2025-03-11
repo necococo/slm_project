@@ -534,8 +534,10 @@ class Trainer:
             
             self.model.train()
             for batch_idx, batch in enumerate(progress_bar):
-                # タイムステップをランダムに選択
-                t = torch.randint(0, diffuser.timesteps, (1,)).item()
+                # タイムステップをランダムに選択 - 反転して低ノイズから始める
+                # t=0が低ノイズ、t=timesteps-1が高ノイズになるように
+                t_random = torch.randint(0, diffuser.timesteps, (1,)).item()
+                t = diffuser.timesteps - 1 - t_random  # タイムステップを反転
                 
                 # Acceleratorを使用した学習ステップ
                 with self.accelerator.accumulate(self.model):
@@ -586,11 +588,19 @@ class Trainer:
                     sample_text = tokenizer.decode(sample_ids)
                     print(f"元のテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
                     
-                    # ノイズ追加
-                    t_max = torch.tensor([diffuser.timesteps - 1], device=batch["input_ids"].device)
-                    noisy_ids, _ = diffuser(batch["input_ids"][:1], t_max)
+                    # ノイズ追加 - 低ノイズから始める
+                    # t=0をサンプルテストに使用 (最小ノイズ量)
+                    t_min = torch.tensor([0], device=batch["input_ids"].device)
+                    noisy_ids, _ = diffuser(batch["input_ids"][:1], t_min)
                     noisy_text = tokenizer.decode(noisy_ids[0].cpu().tolist())
-                    print(f"ノイズ後: {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
+                    print(f"ノイズ後 (低ノイズ t=0): {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
+                    
+                    # 中間ノイズレベルも確認
+                    t_mid = torch.tensor([diffuser.timesteps // 2], device=batch["input_ids"].device)
+                    noisy_ids_mid, _ = diffuser(batch["input_ids"][:1], t_mid)
+                    mask_count_mid = noisy_ids_mid[0].cpu().tolist().count(tokenizer.mask_token_id)
+                    total_tokens = len(noisy_ids_mid[0])
+                    print(f"中間ノイズ (t={diffuser.timesteps // 2}): マスク率 {mask_count_mid}/{total_tokens} ({mask_count_mid/total_tokens*100:.1f}%)")
                     
                     # マスク率を計算
                     mask_count = noisy_ids[0].cpu().tolist().count(tokenizer.mask_token_id)
