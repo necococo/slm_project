@@ -26,8 +26,7 @@ class HFDatasetWrapper(Dataset):
     Notes:
         - WikiDatasetとの互換性を持たせるために必要なインターフェイスを実装
         - 入力データが直接input_ids形式か、textデータのどちらでも対応
-        - トークナイザーはhf_tokenizer (transformers.AutoTokenizer) または
-          JapaneseTokenizerどちらも受け付ける
+        - トークナイザーは標準のHuggingFaceトークナイザー (AutoTokenizer) を使用
     """
     def __init__(self, dataset, tokenizer=None, max_length=512):
         self.dataset = dataset
@@ -219,10 +218,12 @@ def parse_args():
                         help="データセットの準備のみを行い、トレーニングはスキップする")
     parser.add_argument("--test_samples", type=int, default=1000,
                         help="テストデータセットのサンプル数")
+    parser.add_argument("--debug", action="store_true",
+                        help="デバッグモード（詳細ログ出力）")
     
     args = parser.parse_args()
     
-    # データセットのスプリット別サブディレクトリを作成
+    # データセットのスプリット別サブディレクトリのパスを設定
     args.train_data_dir = os.path.join(args.local_data_dir, "train")
     args.valid_data_dir = os.path.join(args.local_data_dir, "valid")
     args.test_data_dir = os.path.join(args.local_data_dir, "test")
@@ -230,20 +231,50 @@ def parse_args():
     # プレーンテキスト用のテストデータ出力先も設定
     args.test_plain_output = os.path.join(args.local_data_dir, "test_plain.txt")
     
+    # ベースディレクトリを作成 (パスが存在しない場合)
+    try:
+        print(f"データディレクトリを作成: {args.local_data_dir}")
+        os.makedirs(args.local_data_dir, exist_ok=True)
+    except Exception as e:
+        print(f"警告: ベースディレクトリの作成に失敗しました: {e}")
+    
     return args
 
 
 def clean_text(batch):
-    """テキスト内のプレースホルダートークンを削除する関数"""
+    """テキスト内のプレースホルダートークンを削除し、空行を処理する関数"""
     text = batch["text"]
+    
+    # プレースホルダートークンの削除
     for token in ["_START_ARTICLE_", "_START_SECTION_", "_START_PARAGRAPH_"]:
         text = text.replace(token, "")
     text = text.replace("_NEWLINE_", "\n")
-    batch["text"] = text
+    
+    # 連続する改行を1つに置換
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    
+    # 文章間の空行を正規化（2つ以上連続する改行を最大2つに制限）
+    lines = text.split("\n")
+    non_empty_lines = []
+    empty_line_count = 0
+    
+    for line in lines:
+        if line.strip():
+            non_empty_lines.append(line)
+            empty_line_count = 0
+        else:
+            # 空行は最大2つまで許可
+            if empty_line_count < 2:
+                non_empty_lines.append("")
+            empty_line_count += 1
+    
+    # 正規化したテキストを再度結合
+    batch["text"] = "\n".join(non_empty_lines)
     return batch
 
 
-def tokenize_function(examples, hf_tokenizer, max_seq_len):
+def tokenize_function(examples, tokenizer, max_seq_len, args=None):
     """テキストをトークン化する関数"""
     tokenized = {"input_ids": [], "attention_mask": []}
     
@@ -252,15 +283,32 @@ def tokenize_function(examples, hf_tokenizer, max_seq_len):
         print(f"警告: 'text'キーが見つかりません。利用可能なキー: {list(examples.keys())}")
         return tokenized
     
-    for text in examples["text"]:
-        if not text:  # 空のテキストはスキップ
-            tokenized["input_ids"].append([])
-            tokenized["attention_mask"].append([])
-            continue
-            
+    # 空行を含むテキストをフィルタリング
+    valid_texts = []
+    valid_indices = []
+    
+    for i, text in enumerate(examples["text"]):
+        # 以下の条件のテキストはスキップする:
+        # - 空のテキスト
+        # - 非常に短いテキスト（10文字未満）
+        # - 空行を含むテキスト
+        if text and len(text.strip()) >= 10 and "\n\n" not in text:
+            valid_texts.append(text)
+            valid_indices.append(i)
+        elif hasattr(args, 'debug') and args.debug and text:
+            reason = "空または短すぎる" if not text or len(text.strip()) < 10 else "空行を含む"
+            preview = text[:20] + "..." if len(text) > 20 else text
+            print(f"警告: {reason}テキストをスキップします：「{preview}」")
+    
+    # 有効なテキストだけを処理
+    if not valid_texts:
+        return {"input_ids": [], "attention_mask": []}
+    
+    # 有効なテキストのみをトークン化
+    for text in valid_texts:
         try:
-            # トークン化 - 直接Hugging Faceトークナイザーを使用
-            token_ids = hf_tokenizer.encode(text, add_special_tokens=False)
+            # トークン化 - 直接トークナイザーを使用
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
             
             # 最大長に切り詰め
             if len(token_ids) > max_seq_len:
@@ -268,14 +316,12 @@ def tokenize_function(examples, hf_tokenizer, max_seq_len):
             
             # 注意マスクを作成（すべて1）
             attn_mask = [1] * len(token_ids)
+            
+            # 結果を追加
+            tokenized["input_ids"].append(token_ids)
+            tokenized["attention_mask"].append(attn_mask)
         except Exception as e:
             print(f"トークン化エラー: {e} テキスト: {text[:50]}...")
-            # エラー時は空のリストを追加
-            token_ids = []
-            attn_mask = []
-        
-        tokenized["input_ids"].append(token_ids)
-        tokenized["attention_mask"].append(attn_mask)
     
     return tokenized
 
@@ -283,7 +329,12 @@ def tokenize_function(examples, hf_tokenizer, max_seq_len):
 def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_samples=1000, args=None):
     """Hugging Faceからデータセットをロードして準備する"""
     print(f"Hugging Faceからデータセット {dataset_name} をロード中...")
-    dataset = load_dataset(dataset_name)
+    try:
+        dataset = load_dataset(dataset_name)
+        print(f"データセットのロードに成功しました")
+    except Exception as e:
+        print(f"エラー: データセットのロードに失敗しました: {e}")
+        raise
     
     print(f"データセット情報:")
     for split in dataset:
@@ -350,9 +401,9 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_s
             
             print(f"テストサンプル {len(test_part)} 件を保存しました（余計なマークアップなし）")
             
-            # トークナイザーも保存
+            # トークナイザー情報をargsに保存
             if tokenizer:
-                args.hf_tokenizer = tokenizer
+                args.tokenizer = tokenizer
     
     # データセットをトークン化
     print("\nデータセットをトークン化中...")
@@ -360,7 +411,7 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_s
     for split in cleaned_dataset:
         print(f"  {split}スプリットをトークン化中...")
         tokenized_datasets[split] = cleaned_dataset[split].map(
-            lambda examples: tokenize_function(examples, tokenizer, max_seq_len),
+            lambda examples: tokenize_function(examples, tokenizer, max_seq_len, args),
             batched=True,
             batch_size=1000,
             remove_columns=["text"]
@@ -387,24 +438,42 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_s
     if args:
         # train
         if "train" in tokenized_datasets:
-            os.makedirs(args.train_data_dir, exist_ok=True)
-            print(f"\nトレーニングデータセットを保存: {args.train_data_dir}")
-            # DatasetDictではなく直接データセットを保存
-            tokenized_datasets["train"].save_to_disk(args.train_data_dir)
+            try:
+                print(f"\nトレーニングデータセットのディレクトリを作成: {args.train_data_dir}")
+                os.makedirs(args.train_data_dir, exist_ok=True)
+                
+                print(f"トレーニングデータセットを保存中... サイズ: {len(tokenized_datasets['train'])}サンプル")
+                # DatasetDictではなく直接データセットを保存
+                tokenized_datasets["train"].save_to_disk(args.train_data_dir)
+                print(f"トレーニングデータの保存が完了しました: {args.train_data_dir}")
+            except Exception as e:
+                print(f"エラー: トレーニングデータの保存中に問題が発生しました: {e}")
         
         # validation
         if "validation" in tokenized_datasets:
-            os.makedirs(args.valid_data_dir, exist_ok=True)
-            print(f"検証データセットを保存: {args.valid_data_dir}")
-            # DatasetDictではなく直接データセットを保存
-            tokenized_datasets["validation"].save_to_disk(args.valid_data_dir)
+            try:
+                print(f"\n検証データセットのディレクトリを作成: {args.valid_data_dir}")
+                os.makedirs(args.valid_data_dir, exist_ok=True)
+                
+                print(f"検証データセットを保存中... サイズ: {len(tokenized_datasets['validation'])}サンプル")
+                # DatasetDictではなく直接データセットを保存
+                tokenized_datasets["validation"].save_to_disk(args.valid_data_dir)
+                print(f"検証データの保存が完了しました: {args.valid_data_dir}")
+            except Exception as e:
+                print(f"エラー: 検証データの保存中に問題が発生しました: {e}")
         
         # test
         if "test" in tokenized_datasets:
-            os.makedirs(args.test_data_dir, exist_ok=True)
-            print(f"テストデータセットを保存: {args.test_data_dir}")
-            # DatasetDictではなく直接データセットを保存
-            tokenized_datasets["test"].save_to_disk(args.test_data_dir)
+            try:
+                print(f"\nテストデータセットのディレクトリを作成: {args.test_data_dir}")
+                os.makedirs(args.test_data_dir, exist_ok=True)
+                
+                print(f"テストデータセットを保存中... サイズ: {len(tokenized_datasets['test'])}サンプル")
+                # DatasetDictではなく直接データセットを保存
+                tokenized_datasets["test"].save_to_disk(args.test_data_dir)
+                print(f"テストデータの保存が完了しました: {args.test_data_dir}")
+            except Exception as e:
+                print(f"エラー: テストデータの保存中に問題が発生しました: {e}")
             
             # テストデータのプレーンテキスト版も保存 - 純粋なテキストのみ
             if hasattr(args, 'test_plain_output'):
@@ -480,6 +549,27 @@ def main():
     print(f"  - 訓練: {args.train_data_dir}")
     print(f"  - 検証: {args.valid_data_dir}")
     print(f"  - テスト: {args.test_data_dir}")
+    
+    # サブディレクトリを明示的に作成
+    try:
+        # 各ディレクトリを作成
+        print("データサブディレクトリを作成中...")
+        os.makedirs(args.train_data_dir, exist_ok=True)
+        print(f"  訓練データディレクトリ作成: {args.train_data_dir}")
+        
+        os.makedirs(args.valid_data_dir, exist_ok=True)
+        print(f"  検証データディレクトリ作成: {args.valid_data_dir}")
+        
+        os.makedirs(args.test_data_dir, exist_ok=True)
+        print(f"  テストデータディレクトリ作成: {args.test_data_dir}")
+    except Exception as e:
+        print(f"エラー: ディレクトリ作成中に問題が発生しました: {e}")
+    
+    # デバッグモードの場合、詳細情報を表示
+    if hasattr(args, 'debug') and args.debug:
+        print(f"\nディレクトリ詳細:")
+        print(f"  訓練データディレクトリの絶対パス: {os.path.abspath(args.train_data_dir)}")
+        print(f"  訓練データディレクトリ存在: {os.path.exists(args.train_data_dir)}")
     
     if args.use_local_dataset:
         print(f"ローカルデータセットを使用します")
@@ -586,13 +676,13 @@ def main():
         return
     
     # 語彙サイズを安全に取得
-    if hasattr(hf_tokenizer, 'vocab_size'):
-        vocab_size = hf_tokenizer.vocab_size
-    elif hasattr(hf_tokenizer, 'vocab') and isinstance(hf_tokenizer.vocab, dict):
-        vocab_size = len(hf_tokenizer.vocab)
+    if hasattr(tokenizer, 'vocab_size'):
+        vocab_size = tokenizer.vocab_size
+    elif hasattr(tokenizer, 'vocab') and isinstance(tokenizer.vocab, dict):
+        vocab_size = len(tokenizer.vocab)
     else:
         # 安全のためのデフォルト値
-        vocab_size = 32000
+        vocab_size = 32100  # megagonlabs/t5-base-japanese-webの語彙サイズ
         print(f"警告: トークナイザーから語彙サイズを取得できませんでした。デフォルト値 {vocab_size} を使用します。")
     
     print(f"使用する語彙サイズ: {vocab_size}")
@@ -727,26 +817,16 @@ def main():
             print(f"予期しない形式のデータセット: {type(first_item)}")
     
     # トークナイザーが正しく動作することを確認
-    tokenizer_for_wrapper = hf_tokenizer  # デフォルトはHuggingFaceトークナイザー
+    tokenizer_for_wrapper = tokenizer  # デフォルトはロードしたトークナイザー
     
     # サンプルテキストでトークナイザーをテスト
     test_text = "これはトークナイザーのテストです。"
     try:
-        test_tokens_hf = hf_tokenizer.encode(test_text, add_special_tokens=False)
-        print(f"HuggingFaceトークナイザーのテスト結果: {test_tokens_hf[:10]}...")
-        # 成功したら、このトークナイザーを使用
-        tokenizer_for_wrapper = hf_tokenizer
-    except Exception as e1:
-        print(f"HuggingFaceトークナイザーのエラー: {e1}")
-        try:
-            # JapaneseTokenizerでも試す
-            test_tokens_jp = tokenizer.encode(test_text)
-            print(f"JapaneseTokenizerのテスト結果: {test_tokens_jp[:10]}...")
-            # 成功したら、このトークナイザーを使用
-            tokenizer_for_wrapper = tokenizer
-        except Exception as e2:
-            print(f"JapaneseTokenizerのエラー: {e2}")
-            print("警告: どちらのトークナイザーも正常に動作しません。")
+        test_tokens = tokenizer.encode(test_text, add_special_tokens=False)
+        print(f"トークナイザーのテスト結果: {test_tokens[:10]}...")
+    except Exception as e:
+        print(f"トークナイザーエラー: {e}")
+        print("警告: トークナイザーが正常に動作しません。")
     
     # 検証データセットとテストデータセットは、prepare_dataset_from_hf関数内で
     # 自動的に作成されるため、ここでの処理は不要になりました
