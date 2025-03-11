@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
+# slm/main.py - SLM (Simple Language Model)の主要実行スクリプト
+# このファイルはWiki40B日本語データセットを使用したDiffusionモデルの学習を行います
 
 import os
 import sys
@@ -180,7 +182,7 @@ class HFDatasetWrapper(Dataset):
         return {"input_ids": [], "attention_mask": [], "labels": []}
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="toramaru-u/wiki40b-ja データセットを使用したDiffusionモデルの学習")
+    parser = argparse.ArgumentParser(description="SLM：日本語Wiki40Bデータセットを使用したWave Network+Diffusionモデルの学習")
     
     # データパス関連
     parser.add_argument("--dataset_name", type=str, default="toramaru-u/wiki40b-ja",
@@ -622,7 +624,7 @@ def main():
             print(f"テストデータサンプル数: {len(dataset['test'])}")
             
         print("\n利用方法:")
-        print(f"  python slm/train_wiki40b_ja_diffusion_megagon_fixed2.py \\")
+        print(f"  python slm/main.py \\")
         print(f"      --use_local_dataset \\")
         print(f"      --local_data_dir=\"{args.local_data_dir}\" \\")
         print(f"      --output_dir=\"/path/to/output\" \\")
@@ -679,7 +681,7 @@ def main():
     paths_config = PathsConfig(
         base_dir=os.getcwd(),
         output_dir=args.output_dir,
-        run_name=f"wiki40b_ja_diffusion_megagon_{args.hidden_size}h_{args.num_layers}l"
+        run_name=f"slm_{args.hidden_size}h_{args.num_layers}l"
     )
     
     # Google Driveの検出（Colabの場合）
