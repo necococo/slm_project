@@ -103,29 +103,7 @@ class SimpleDataProcessor:
         
         return tokenized
     
-    def decode(self, token_ids: List[int]) -> str:
-        """
-        トークンIDをテキストにデコード
-        
-        Args:
-            token_ids: デコードするトークンID列
-            
-        Returns:
-            デコードされたテキスト
-        """
-        # マスクトークンを明示的に<mask>テキストで表示
-        tokens = []
-        for token_id in token_ids:
-            if token_id == self.mask_token_id:
-                tokens.append("<mask>")
-            else:
-                tokens.append(self.tokenizer.convert_ids_to_tokens(token_id))
-        
-        # テキストを構築
-        text = "".join(tokens).replace("▁", " ")
-        
-        # 正しいマスクトークン表示を含むテキストを返す
-        return text
+    # 標準のデコードメソッドを使用するため、独自のデコードメソッドは不要に
     
     def load_dataset(self, dataset_path: str) -> Dataset:
         """
@@ -265,18 +243,14 @@ class SimpleDataProcessor:
         
         # デコード
         original_text = self.tokenizer.decode(tokens)
-        # 標準のdecode関数はマスクトークンを適切に表示できない場合がある
+        # 標準のdecode関数を使用
         standard_decoded = self.tokenizer.decode(noisy_tokens_list)
-        # 独自のdecode関数
-        custom_decoded = self.decode(noisy_tokens_list)
         
         # 結果表示
         print("オリジナルテキスト:")
         print(original_text)
         print("\n標準デコード結果:")
         print(standard_decoded)
-        print("\n専用デコード結果:")
-        print(custom_decoded)
         
         # マスクトークンの数を確認
         mask_count = noisy_tokens_list.count(self.mask_token_id)

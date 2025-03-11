@@ -19,11 +19,11 @@ def parse_args():
                         help="実行するテスト (data: データ処理, diffusion: 拡散モデル, all: すべて)")
     parser.add_argument("--tokenizer", type=str, default="megagonlabs/t5-base-japanese-web",
                         help="使用するトークナイザー")
-    parser.add_argument("--test_text", type=str, 
-                        default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
-                                "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
-                                "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
-                        help="テスト用テキスト")
+    # parser.add_argument("--test_text", type=str, 
+    #                     default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
+    #                             "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
+    #                             "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
+    #                     help="テスト用テキスト")
     
     return parser.parse_args()
 
@@ -34,7 +34,7 @@ def run_data_processor_test(args):
         sys.executable,
         os.path.join(os.path.dirname(__file__), "test_data_processor.py"),
         f"--tokenizer_name={args.tokenizer}",
-        f"--test_text={args.test_text}"
+        # f"--test_text={args.test_text}"
     ]
     subprocess.run(cmd)
 

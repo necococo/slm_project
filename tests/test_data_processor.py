@@ -20,14 +20,14 @@ def parse_args():
                         help="最大シーケンス長")
     parser.add_argument("--mask_token", type=str, default="<mask>",
                         help="マスクトークン")
-    parser.add_argument("--test_text", type=str, 
-                        default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
-                                "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
-                                "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
-                        help="テスト用テキスト")
+    # parser.add_argument("--test_text", type=str, 
+    #                     default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
+    #                             "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
+    #                             "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
+    #                     help="テスト用テキスト")
     parser.add_argument("--mask_ratio", type=float, default=0.2,
                         help="マスク割合")
-    parser.add_argument("--dataset_path", type=str, default=None,
+    parser.add_argument("--dataset_path", type=str, default="/content/drive/MyDrive/slm/data/wiki40b_ja/train",
                         help="データセットのパス（指定するとデータセットのテストも行う）")
     
     return parser.parse_args()
@@ -48,11 +48,36 @@ def main():
     print(f"テストテキスト: {args.test_text[:50]}...")
     print(f"マスク割合: {args.mask_ratio:.2f}")
     
-    # マスキングとデコードのテスト
-    processor.test_decode_with_mask(args.test_text, args.mask_ratio)
-    
     # データセットのテスト（指定されている場合）
     if args.dataset_path:
+        # データセットのロード
+        dataset = processor.load_dataset(args.dataset_path)
+        dataset_size = len(dataset)
+        
+        # ランダムにサンプルを選択
+        import random
+        random_idx = random.randint(0, dataset_size - 1)
+        random_sample = dataset[random_idx]
+        
+        # サンプルのテキストを取得
+        if "text" in random_sample:
+            sample_text = random_sample["text"]
+            print(f"\n=== データセットからランダムに選択したサンプル（インデックス: {random_idx}/{dataset_size-1}） ===")
+            print(f"元のテキスト（プレビュー）: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
+            
+            # マスキングとデコードのテスト
+            processor.test_decode_with_mask(sample_text, args.mask_ratio)
+        else:
+            print("警告: 選択したサンプルに'text'フィールドがありません")
+            print(f"サンプルのキー: {list(random_sample.keys())}")
+            # フォールバックとして引数のテキストを使用
+            processor.test_decode_with_mask(args.test_text, args.mask_ratio)
+    else:
+        # データセットパスが指定されていない場合は引数のテキストを使用
+        processor.test_decode_with_mask(args.test_text, args.mask_ratio)
+    
+    # 追加のデータセットテスト（指定されている場合）
+    if args.dataset_path and not "text" in random_sample:
         print("\n=== データセットのテスト ===")
         try:
             # データセットのロード
@@ -89,10 +114,8 @@ def main():
                     
                     # デコード
                     standard_decoded = processor.tokenizer.decode(noisy_tokens_list)
-                    custom_decoded = processor.decode(noisy_tokens_list)
                     
                     print(f"標準デコード結果: {standard_decoded[:100]}..." if len(standard_decoded) > 100 else standard_decoded)
-                    print(f"専用デコード結果: {custom_decoded[:100]}..." if len(custom_decoded) > 100 else custom_decoded)
                     
                 elif "input_ids" in first_sample:
                     # 既にトークン化済み
