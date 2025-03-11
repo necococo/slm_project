@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
 from slm.wiki40b_ja_dataset import WikiDataset, collate_fn
-from slm.tokenizer import JapaneseTokenizer
+# JapaneseTokenizerは使用せず、標準のHuggingFaceトークナイザーのみ使用
 from slm.train import Trainer
 
 # TOKENIZERS_PARALLELISMの警告を防ぐために環境変数を設定
@@ -187,7 +187,7 @@ def parse_args():
     # データパス関連
     parser.add_argument("--dataset_name", type=str, default="toramaru-u/wiki40b-ja",
                         help="Hugging Faceからロードするデータセット名")
-    parser.add_argument("--local_data_dir", type=str, default="./data/wiki40b_ja",
+    parser.add_argument("--local_data_dir", type=str, default="/content/drive/MyDrive/slm/data/wiki40b_ja/",
                         help="ローカルにダウンロード済みのデータセットディレクトリ")
     parser.add_argument("--output_dir", type=str, default="./outputs",
                         help="モデル出力ディレクトリ")
@@ -280,7 +280,7 @@ def tokenize_function(examples, hf_tokenizer, max_seq_len):
     return tokenized
 
 
-def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, max_valid_samples=1000, args=None):
+def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_samples=1000, args=None):
     """Hugging Faceからデータセットをロードして準備する"""
     print(f"Hugging Faceからデータセット {dataset_name} をロード中...")
     dataset = load_dataset(dataset_name)
@@ -360,7 +360,7 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
     for split in cleaned_dataset:
         print(f"  {split}スプリットをトークン化中...")
         tokenized_datasets[split] = cleaned_dataset[split].map(
-            lambda examples: tokenize_function(examples, hf_tokenizer, max_seq_len),
+            lambda examples: tokenize_function(examples, tokenizer, max_seq_len),
             batched=True,
             batch_size=1000,
             remove_columns=["text"]
@@ -431,43 +431,7 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
 
 
 
-def load_tokenizer_megagon(tokenizer_name):
-    """megagonlabs/t5-base-japanese-webなどのトークナイザーをロード"""
-    print(f"トークナイザー {tokenizer_name} をロード中...")
-    
-    # まずHuggingFaceからロード
-    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=False)
-    
-    # T5トークナイザーにはデフォルトのマスクトークンがないため、必要に応じて追加
-    if not hasattr(hf_tokenizer, 'mask_token') or hf_tokenizer.mask_token is None:
-        # マスクトークンの追加
-        hf_tokenizer.add_special_tokens({'mask_token': '<mask>'})
-        print(f"マスクトークン '<mask>' を追加しました。")
-    else:
-        print(f"既存のマスクトークン: {hf_tokenizer.mask_token}")
-    
-    # BOSトークンの追加（必要に応じて）
-    if not hasattr(hf_tokenizer, 'bos_token') or hf_tokenizer.bos_token is None:
-        hf_tokenizer.add_special_tokens({'bos_token': '<s>'})
-        print(f"BOSトークン '<s>' を追加しました。")
-    else:
-        print(f"既存のBOSトークン: {hf_tokenizer.bos_token}")
-    
-    # マスクトークンIDを確認
-    mask_token_id = hf_tokenizer.mask_token_id
-    print(f"マスクトークンID: {mask_token_id}")
-    
-    # JapaneseTokenizerラッパーに変換
-    jp_tokenizer = JapaneseTokenizer.from_pretrained_tokenizer(hf_tokenizer)
-    
-    print(f"トークナイザーをロードしました。語彙サイズ: {len(hf_tokenizer.vocab) if hasattr(hf_tokenizer, 'vocab') else hf_tokenizer.vocab_size}")
-    
-    # トークナイザーの設定をJapaneseTokenizerに反映（マスクトークンなど）
-    jp_tokenizer.mask_token = hf_tokenizer.mask_token
-    jp_tokenizer.mask_token_id = hf_tokenizer.mask_token_id
-    print(f"JapaneseTokenizerのマスクトークン: {jp_tokenizer.mask_token}, ID: {jp_tokenizer.mask_token_id}")
-    
-    return jp_tokenizer, hf_tokenizer
+# 標準のHuggingFaceトークナイザーのロード関数はslm/tokenizer.pyに移動しました
 
 
 def main():
@@ -492,16 +456,7 @@ def main():
         import google.colab
         is_colab = True
         print("Google Colab環境で実行中")
-        
-        # Colabでのプログレスバー設定の最適化
-        # 入力プロンプトを防ぐため、ウィジェットの特別設定
-        try:
-            from google.colab import output
-            output.enable_custom_widget_manager()
-            print("Colabウィジェットマネージャーを有効化しました")
-        except:
-            print("Colabウィジェットマネージャーの有効化に失敗しました")
-        
+
         # Colabでのtqdmの設定を最適化
         # ウィジェットではなくテキストベースのプログレスバーを使用
         import tqdm
@@ -514,8 +469,9 @@ def main():
         is_colab = False
         print("ローカル環境で実行中")
     
-    # トークナイザーのロード
-    tokenizer, hf_tokenizer = load_tokenizer_megagon(args.tokenizer_name)
+    # トークナイザーのロード - 単一のトークナイザーのみを使用
+    from slm.tokenizer import load_tokenizer
+    tokenizer = load_tokenizer(args.tokenizer_name)
     mask_token_id = tokenizer.mask_token_id
     
     print(f"[MASK]トークンID: {mask_token_id}")
@@ -597,12 +553,12 @@ def main():
         except Exception as e:
             print(f"ローカルデータセットのロードに失敗しました: {e}")
             print("Hugging Faceからデータセットをロードします...")
-            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, 
+            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, tokenizer, 
                                             args.max_seq_len, max_valid_samples=1000, args=args)
     else:
         # Hugging Faceからデータセットを準備
         print("Hugging Faceからデータセットをロードして準備します")
-        dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, 
+        dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, tokenizer, 
                                          args.max_seq_len, max_valid_samples=1000, args=args)
         
         # 将来の使用のためにローカルに保存は prepare_dataset_from_hf 内で行われる
@@ -763,10 +719,10 @@ def main():
     # Colab環境の場合、メモリ使用量や各種設定を調整
     if is_colab:
         # バッチサイズの調整
-        original_batch_size = training_config.batch_size
-        training_config.batch_size = min(training_config.batch_size, 4)
-        if original_batch_size != training_config.batch_size:
-            print(f"Colab環境向けにバッチサイズを調整: {original_batch_size} → {training_config.batch_size}")
+        # original_batch_size = training_config.batch_size
+        # training_config.batch_size = min(training_config.batch_size, 4)
+        # if original_batch_size != training_config.batch_size:
+        #     print(f"Colab環境向けにバッチサイズを調整: {original_batch_size} → {training_config.batch_size}")
         
         # AMP（Automatic Mixed Precision）の確認
         if hasattr(training_config, 'use_amp') and training_config.use_amp:

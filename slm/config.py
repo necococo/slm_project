@@ -6,42 +6,32 @@ import os
 
 class ModelConfig:
     """
-    How:
-        Wave Network + RoPE + Wavelet変換のモデル構成を定義します。
-        波形表現の次元数やレイヤ数、語彙サイズなどをここで指定します。
-
+    Wiki40B日本語データセット専用のWave Network設定
+    
     Attributes:
-        hidden_size: モデル内部の隠れ次元 (wave表現における1つの軸の長さ)
+        hidden_size: モデル内部の隠れ次元
         num_layers: WaveBlock + RoPEレイヤの段数
-        vocab_size: 語彙サイズ（トークナイザーから自動取得も可能）
+        vocab_size: 語彙サイズ
         max_seq_len: 最大シーケンス長
         dropout_prob: ドロップアウト率
-        use_rope: RoTary Position Embeddingを使うかどうか
-        use_wavelet: Wavelet変換を使用するかどうか (True/False)
-        wavelet_name: PyWaveletsで使用するWaveletの名称 (例: 'haar', 'db1', 'db2'など)
-        norm_scheme: 'pre'または'post'のLayerNorm方式を選択
-        activation: 活性化関数の選択
-        complex_init_scale: 複素数初期化のスケール
     """
     def __init__(
         self,
         hidden_size: int = 1024,
         num_layers: int = 3,
-        vocab_size: Optional[int] = None,  # トークナイザーから取得する場合はNone
+        vocab_size: Optional[int] = 32100,  # megagonlabs/t5-base-japanese-webの語彙サイズ
         max_seq_len: int = 512,
         dropout_prob: float = 0.2,
         use_rope: bool = True,
-        # ウェーブレット関連
-        use_wavelet: bool = True,  # ハイパラ探索結果と組み合わせるためTrueをデフォルトに変更
-        wavelet_name: str = "haar",  # haarウェーブレットをデフォルトに
-        # スタイル
-        norm_scheme: str = "post",  # 追加: 'pre'または'post'のLayerNorm方式を選択
-        activation: str = "gelu",   # 追加: 活性化関数の選択
-        complex_init_scale: float = 0.02,  # 追加: 複素数初期化のスケール
-        # 生体ゆらぎゲート機構の設定 (ハイパラ探索の最適値)
-        use_bio_noise: bool = True,       # 生体ゆらぎを使用する (最適値)
-        noise_std: float = 0.1,  # 生体ゆらぎの標準偏差（最適値）
-        trainable_noise: bool = False,    # ノイズスケールを固定（最適値）
+        # 以下はデフォルト値で固定し、ユーザーが変更する必要のないパラメータ
+        use_wavelet: bool = True,
+        wavelet_name: str = "haar",
+        norm_scheme: str = "post",
+        activation: str = "gelu",
+        complex_init_scale: float = 0.02,
+        use_bio_noise: bool = True,
+        noise_std: float = 0.1,
+        trainable_noise: bool = False,
     ) -> None:
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -123,10 +113,12 @@ class ModelConfig:
         
 class TrainingConfig:
     """
-    How:
-        トレーニング関連の設定を保持するクラス。
-        学習率、バッチサイズ、エポック数などを指定。
-        注: mlm_epochs=0, diffusion_epochs=3 に設定することでDiffusionモードのみで実行可能
+    Wiki40B日本語データセット専用のトレーニング設定
+    
+    Attributes:
+        learning_rate: 学習率
+        batch_size: バッチサイズ
+        diffusion_epochs: 拡散学習のエポック数
     """
     def __init__(
         self,
