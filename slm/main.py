@@ -351,8 +351,8 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_s
             print(f"テストサンプル {len(test_part)} 件を保存しました（余計なマークアップなし）")
             
             # トークナイザーも保存
-            if hf_tokenizer:
-                args.hf_tokenizer = hf_tokenizer
+            if tokenizer:
+                args.hf_tokenizer = tokenizer
     
     # データセットをトークン化
     print("\nデータセットをトークン化中...")
@@ -414,10 +414,7 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, _, max_seq_len, max_valid_s
                     for i in range(min(len(tokenized_datasets["test"]), 100)):  # サンプル100件のみ表示
                         if i < len(tokenized_datasets["test"]) and "input_ids" in tokenized_datasets["test"][i]:
                             sample_ids = tokenized_datasets["test"][i]["input_ids"]
-                            if hasattr(args, 'hf_tokenizer'):
-                                sample_text = args.hf_tokenizer.decode(sample_ids)
-                            else:
-                                sample_text = f"{sample_ids[:50]}"
+                            sample_text = tokenizer.decode(sample_ids) if tokenizer else f"{sample_ids[:50]}"
                             f.write(f"{sample_text}\n\n")
         
         print("\nデータセットの保存が完了しました。各スプリットは以下のディレクトリにあります:")
@@ -658,45 +655,24 @@ def main():
     test_text = "これはトークナイザーのテストです。日本語Wikipediaで学習されたモデルを使います。"
     print(f"テスト文: {test_text}")
     
-    # トークン化 - JapaneseTokenizerとHugging Faceトークナイザーの両方をテスト
-    # JapaneseTokenizerにも特殊トークンを追加しないように明示
-    if hasattr(tokenizer, 'encode_no_special'):
-        jp_tokens_ids = tokenizer.encode_no_special(test_text)
-    else:
-        jp_tokens_ids = tokenizer.encode(test_text)
-    hf_tokens_ids = hf_tokenizer.encode(test_text, add_special_tokens=False)
+    # トークン化 - 標準のトークナイザーでテスト
+    tokens_ids = tokenizer.encode(test_text, add_special_tokens=False)
     
-    # デバッグ用のトークン比較
-    if len(jp_tokens_ids) != len(hf_tokens_ids):
-        print(f"トークン数の不一致: jp={len(jp_tokens_ids)}, hf={len(hf_tokens_ids)}")
-        if len(jp_tokens_ids) > len(hf_tokens_ids):
-            # 余分なトークンを取り除く（通常はEOSトークン=1）
-            jp_tokens_ids = jp_tokens_ids[:-1]
-            print(f"JapaneseTokenizerの末尾トークンを取り除きました: {jp_tokens_ids}")
+    # トークン情報の出力
+    print(f"トークンID: {tokens_ids}")
     
-    print(f"JapaneseTokenizer トークンID: {jp_tokens_ids}")
-    print(f"HuggingFace トークンID: {hf_tokens_ids}")
-    print(f"一致しているか: {jp_tokens_ids == hf_tokens_ids}")
+    # トークン文字列の表示
+    tokens_str = tokenizer.convert_ids_to_tokens(tokens_ids)
+    print(f"トークン文字列: {tokens_str}")
     
-    # トークン文字列表示
-    tokens_str = hf_tokenizer.convert_ids_to_tokens(hf_tokens_ids)
-    print(f"トークン: {tokens_str}")
-    
-    # デコード - 両方のトークナイザーをテスト
-    try:
-        jp_decoded_text = tokenizer.decode(jp_tokens_ids)
-        print(f"JapaneseTokenizer デコード結果: {jp_decoded_text}")
-    except Exception as e:
-        print(f"JapaneseTokenizer デコードエラー: {e}")
-    
-    hf_decoded_text = hf_tokenizer.decode(hf_tokens_ids, skip_special_tokens=True)
-    print(f"HuggingFace デコード結果: {hf_decoded_text}")
+    # デコードのテスト
+    decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
+    print(f"デコード結果: {decoded_text}")
     
     # 特殊トークンの確認
     print(f"\n特殊トークン情報:")
     print(f"  MASK: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
-    print(f"  HF MASK: {hf_tokenizer.mask_token} (ID: {hf_tokenizer.mask_token_id})")
-    print(f"  語彙サイズ: {hf_tokenizer.vocab_size}")
+    print(f"  語彙サイズ: {tokenizer.vocab_size}")
     
     # トレーニングデータの最初のバッチをチェック
     print("\n=== トレーニングデータのサンプル ===")
@@ -711,7 +687,7 @@ def main():
             print(f"サンプルのトークンID (最初の20個): {sample_ids[:20]}")
             
             # トークンIDをデコードして表示
-            sample_text = hf_tokenizer.decode(sample_ids, skip_special_tokens=True)
+            sample_text = tokenizer.decode(sample_ids, skip_special_tokens=True)
             print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
     else:
         print("トレーニングデータセットが見つかりません")
