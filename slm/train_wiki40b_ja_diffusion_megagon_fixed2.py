@@ -6,7 +6,7 @@ import sys
 import argparse
 import torch
 from torch.utils.data import DataLoader, Dataset
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict, load_from_disk
 from transformers import AutoTokenizer
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
 from slm.modules.wave_network import WaveNetworkLM
@@ -16,47 +16,147 @@ from slm.train import Trainer
 
 # データセットラッパークラスを追加
 class HFDatasetWrapper(Dataset):
-    """Hugging Faceデータセットをラップしてcollatorに適した形式を提供するクラス"""
-    def __init__(self, dataset):
+    """Hugging Faceデータセットをラップしてcollatorに適した形式を提供するクラス
+    
+    Notes:
+        - WikiDatasetとの互換性を持たせるために必要なインターフェイスを実装
+        - 入力データが直接input_ids形式か、textデータのどちらでも対応
+        - トークナイザーはhf_tokenizer (transformers.AutoTokenizer) または
+          JapaneseTokenizerどちらも受け付ける
+    """
+    def __init__(self, dataset, tokenizer=None, max_length=512):
         self.dataset = dataset
+        self.tokenizer = tokenizer  # トークナイザーを保持
+        self.max_length = max_length
+        
+        # WikiDatasetとの互換性のために属性を追加
+        self.file_path = None
+        self.memory_efficient = False
+        
+        # 最初のデータアイテムを確認してデータセットの形式を判断
+        if len(dataset) > 0:
+            first_item = dataset[0]
+            self.has_input_ids = "input_ids" in first_item if isinstance(first_item, dict) else False
+            self.has_text = "text" in first_item if isinstance(first_item, dict) else False
+            
+            # データセットの形式をログ出力
+            if isinstance(first_item, dict):
+                print(f"データセット形式: {list(first_item.keys())}")
+                
+                if self.has_text and not self.has_input_ids:
+                    if self.tokenizer is None:
+                        raise ValueError("テキストデータを処理するにはトークナイザーが必要です")
+                    print(f"テキストデータを検出しました。自動的にトークン化します。")
+            else:
+                print(f"不明なデータセット形式: {type(first_item)}")
     
     def __len__(self):
         return len(self.dataset)
     
     def __getitem__(self, idx):
         item = self.dataset[idx]
+        
         # collatorが期待する形式にデータを変換
         if isinstance(item, dict):
-            # input_idsが直接存在するか確認
+            # 1. input_idsが直接存在する場合
             if "input_ids" in item:
-                return {"input_ids": item["input_ids"], 
-                        "attention_mask": item.get("attention_mask", [1] * len(item["input_ids"]))}
-            else:
-                # データセットの形式をログ出力して確認
-                print(f"Warning: Dataset item at index {idx} does not have 'input_ids': {item.keys()}")
+                input_ids = item["input_ids"]
+                attention_mask = item.get("attention_mask", [1] * len(input_ids))
                 
-                # データセットの形式に基づいて適切に変換
-                # 例えば、データセットが異なる構造を持っている場合
-                if "tokens" in item:  # トークンIDがtokensキーに格納されている場合
-                    return {"input_ids": item["tokens"], 
-                            "attention_mask": item.get("mask", [1] * len(item["tokens"]))}
+                # 最大長を超える場合は切り詰め
+                if len(input_ids) > self.max_length:
+                    input_ids = input_ids[:self.max_length]
+                    attention_mask = attention_mask[:self.max_length]
+                    
+                # labelsも含める（train.pyのcollate_fnとの互換性のため）
+                result = {
+                    "input_ids": input_ids, 
+                    "attention_mask": attention_mask
+                }
+                
+                # labelsがない場合はinput_idsをコピー（diffusionモデル用）
+                if "labels" not in item:
+                    result["labels"] = input_ids.copy() if isinstance(input_ids, list) else input_ids
                 else:
-                    # 何らかのキーを使って強制的に変換
+                    result["labels"] = item["labels"][:self.max_length]
+                    
+                return result
+                
+            # 2. テキストデータがある場合はトークン化
+            elif "text" in item and self.tokenizer is not None:
+                # トークナイザーを使ってテキストをトークン化
+                try:
+                    text = item["text"]
+                    # _tokenizerがある場合（transformersトークナイザー）
+                    if hasattr(self.tokenizer, '_tokenizer'):
+                        encodings = self.tokenizer._tokenizer.encode(
+                            text, 
+                            add_special_tokens=False,
+                            max_length=self.max_length, 
+                            truncation=True
+                        )
+                        input_ids = encodings
+                    else:
+                        # SentencePieceProcessorを使用
+                        input_ids = self.tokenizer.encode(text)[:self.max_length]
+                        
+                    attention_mask = [1] * len(input_ids)
+                    # labelsも含める（diffusionモデル用）
+                    return {
+                        "input_ids": input_ids, 
+                        "attention_mask": attention_mask,
+                        "labels": input_ids.copy()
+                    }
+                except Exception as e:
+                    if idx % 1000 == 0:  # エラーログの頻度を減らす
+                        print(f"トークン化エラー (idx={idx}): {e}")
+                    return {"input_ids": [], "attention_mask": [], "labels": []}
+            
+            # 3. その他のケース
+            else:
+                if idx % 1000 == 0:  # 頻度を減らしてログ出力
+                    print(f"Warning: Dataset item at index {idx} does not have 'input_ids' or 'text': {item.keys()}")
+                
+                # 何らかのキーを使って強制的に変換
+                if len(item) > 0:
                     first_key = list(item.keys())[0]
                     if isinstance(item[first_key], list):
-                        # リスト形式のデータであれば、それをinput_idsとして使用
-                        return {"input_ids": item[first_key], 
-                                "attention_mask": [1] * len(item[first_key])}
-                    else:
-                        # そうでなければ、空のデータを返す（エラー回避）
-                        return {"input_ids": [], "attention_mask": []}
+                        ids = item[first_key][:self.max_length]
+                        return {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": ids.copy()}
+                
+                # エラー回避のための空データ
+                return {"input_ids": [], "attention_mask": [], "labels": []}
         
         # リスト形式の場合（例えばトークンIDのリスト）
         elif isinstance(item, list):
-            return {"input_ids": item, "attention_mask": [1] * len(item)}
+            ids = item[:self.max_length]
+            return {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": ids.copy()}
+        
+        # テキスト文字列の場合
+        elif isinstance(item, str) and self.tokenizer is not None:
+            try:
+                if hasattr(self.tokenizer, '_tokenizer'):
+                    input_ids = self.tokenizer._tokenizer.encode(
+                        item, 
+                        add_special_tokens=False,
+                        max_length=self.max_length, 
+                        truncation=True
+                    )
+                else:
+                    input_ids = self.tokenizer.encode(item)[:self.max_length]
+                    
+                return {
+                    "input_ids": input_ids, 
+                    "attention_mask": [1] * len(input_ids),
+                    "labels": input_ids.copy()
+                }
+            except Exception as e:
+                if idx % 1000 == 0:  # エラーログの頻度を減らす
+                    print(f"トークン化エラー (idx={idx}): {e}")
+                return {"input_ids": [], "attention_mask": [], "labels": []}
         
         # その他の場合は空の辞書を返す（エラー回避）
-        return {"input_ids": [], "attention_mask": []}
+        return {"input_ids": [], "attention_mask": [], "labels": []}
 
 def parse_args():
     parser = argparse.ArgumentParser(description="toramaru-u/wiki40b-ja データセットを使用したDiffusionモデルの学習")
@@ -91,9 +191,57 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42,
                         help="乱数シード")
     
-    return parser.parse_args()
+    # データセット準備モード
+    parser.add_argument("--prepare_datasets", action="store_true",
+                        help="データセットの準備のみを行い、トレーニングはスキップする")
+    parser.add_argument("--test_samples", type=int, default=1000,
+                        help="テストデータセットのサンプル数")
+    
+    args = parser.parse_args()
+    
+    # データセットのスプリット別サブディレクトリを作成
+    args.train_data_dir = os.path.join(args.local_data_dir, "train")
+    args.valid_data_dir = os.path.join(args.local_data_dir, "valid")
+    args.test_data_dir = os.path.join(args.local_data_dir, "test")
+    
+    # プレーンテキスト用のテストデータ出力先も設定
+    args.test_plain_output = os.path.join(args.local_data_dir, "test_plain.txt")
+    
+    return args
 
-def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, max_valid_samples=1000):
+
+def clean_text(batch):
+    """テキスト内のプレースホルダートークンを削除する関数"""
+    text = batch["text"]
+    for token in ["_START_ARTICLE_", "_START_SECTION_", "_START_PARAGRAPH_"]:
+        text = text.replace(token, "")
+    text = text.replace("_NEWLINE_", "\n")
+    batch["text"] = text
+    return batch
+
+
+def tokenize_function(examples, hf_tokenizer, max_seq_len):
+    """テキストをトークン化する関数"""
+    tokenized = {"input_ids": [], "attention_mask": []}
+    
+    for text in examples["text"]:
+        # トークン化 - 直接Hugging Faceトークナイザーを使用
+        token_ids = hf_tokenizer.encode(text, add_special_tokens=False)
+        
+        # 最大長に切り詰め
+        if len(token_ids) > max_seq_len:
+            token_ids = token_ids[:max_seq_len]
+        
+        # 注意マスクを作成（すべて1）
+        attn_mask = [1] * len(token_ids)
+        
+        tokenized["input_ids"].append(token_ids)
+        tokenized["attention_mask"].append(attn_mask)
+    
+    return tokenized
+
+
+def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, max_valid_samples=1000, args=None):
     """Hugging Faceからデータセットをロードして準備する"""
     print(f"Hugging Faceからデータセット {dataset_name} をロード中...")
     dataset = load_dataset(dataset_name)
@@ -102,38 +250,81 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
     for split in dataset:
         print(f"  {split}: {len(dataset[split])}サンプル")
     
-    # トークン化関数
-    def tokenize_function(examples):
-        tokenized = {"input_ids": [], "attention_mask": []}
+    # データセットをトークン化（まずクリーニング）
+    print("テキストを前処理中...")
+    cleaned_dataset = {}
+    for split in dataset:
+        cleaned_dataset[split] = dataset[split].map(clean_text)
+    
+    # テスト、検証セットの自動作成（trainからの分割）
+    if "train" in cleaned_dataset and "test" not in cleaned_dataset:
+        print("\n検証・テストデータセットがないため、訓練データから自動作成します")
         
-        for text in examples["text"]:
-            # トークン化 - 直接Hugging Faceトークナイザーを使用
-            token_ids = hf_tokenizer.encode(text, add_special_tokens=False)
-            
-            # 最大長に切り詰め
-            if len(token_ids) > max_seq_len:
-                token_ids = token_ids[:max_seq_len]
-            
-            # 注意マスクを作成（すべて1）
-            attn_mask = [1] * len(token_ids)
-            
-            tokenized["input_ids"].append(token_ids)
-            tokenized["attention_mask"].append(attn_mask)
+        # データセット全体のサイズを取得
+        train_size = len(cleaned_dataset["train"])
+        test_size = min(args.test_samples if args and hasattr(args, 'test_samples') else 1000, int(train_size * 0.1))
+        val_size = min(max_valid_samples, int(train_size * 0.1))
+        remaining_size = train_size - test_size - val_size
         
-        return tokenized
+        print(f"データセット分割:")
+        print(f"  元の訓練データ: {train_size}サンプル")
+        print(f"  新しい訓練データ: {remaining_size}サンプル")
+        print(f"  検証データ: {val_size}サンプル")
+        print(f"  テストデータ: {test_size}サンプル")
+        
+        # シード固定でランダムに分割
+        generator = torch.Generator().manual_seed(args.seed if args and hasattr(args, 'seed') else 42)
+        
+        # インデックスをシャッフル
+        indices = torch.randperm(train_size, generator=generator).tolist()
+        
+        # 分割インデックス
+        train_indices = indices[:remaining_size]
+        val_indices = indices[remaining_size:remaining_size+val_size]
+        test_indices = indices[remaining_size+val_size:remaining_size+val_size+test_size]
+        
+        # 新しいデータセットを作成
+        train_part = cleaned_dataset["train"].select(train_indices)
+        val_part = cleaned_dataset["train"].select(val_indices)
+        test_part = cleaned_dataset["train"].select(test_indices)
+        
+        # 元のデータセットを置き換え
+        cleaned_dataset = {
+            "train": train_part,
+            "validation": val_part,
+            "test": test_part
+        }
+        
+        print("データセットを3分割しました")
+        
+        # テスト用プレーンテキストも保存（可視化用）
+        if args and hasattr(args, 'test_plain_output'):
+            print(f"テスト用プレーンテキストデータを保存中: {args.test_plain_output}")
+            
+            from tqdm import tqdm
+            with open(args.test_plain_output, "w", encoding="utf-8") as f:
+                for item in tqdm(test_part, desc="テキスト保存中"):
+                    text = item["text"]
+                    f.write(text + "\n\n" + "-" * 80 + "\n\n")
+            
+            # トークナイザーも保存
+            if hf_tokenizer:
+                args.hf_tokenizer = hf_tokenizer
     
     # データセットをトークン化
-    print("データセットをトークン化中...")
-    tokenized_datasets = dataset.map(
-        tokenize_function,
-        batched=True,
-        batch_size=1000,
-        remove_columns=["text"]
-    )
+    print("\nデータセットをトークン化中...")
+    tokenized_datasets = {}
+    for split in cleaned_dataset:
+        print(f"  {split}スプリットをトークン化中...")
+        tokenized_datasets[split] = cleaned_dataset[split].map(
+            lambda examples: tokenize_function(examples, hf_tokenizer, max_seq_len),
+            batched=True,
+            batch_size=1000,
+            remove_columns=["text"]
+        )
     
-    # 検証セットのサイズを制限（メモリ節約のため）
-    if "validation" in tokenized_datasets and max_valid_samples is not None:
-        tokenized_datasets["validation"] = tokenized_datasets["validation"].select(range(min(len(tokenized_datasets["validation"]), max_valid_samples)))
+    # データセット辞書に変換
+    tokenized_datasets = DatasetDict(tokenized_datasets)
     
     print("トークン化済みデータセット情報:")
     for split in tokenized_datasets:
@@ -145,10 +336,56 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
         print(f"最初のアイテムのキー: {list(first_item.keys())}")
         if "input_ids" in first_item:
             print(f"input_idsの長さ: {len(first_item['input_ids'])}")
+            print(f"最初の20トークン: {first_item['input_ids'][:20]}")
         else:
             print(f"警告: 'input_ids'キーがデータセットのアイテムに見つかりません")
     
+    # 各スプリットをディレクトリに個別保存
+    if args:
+        # train
+        if "train" in tokenized_datasets:
+            os.makedirs(args.train_data_dir, exist_ok=True)
+            print(f"\nトレーニングデータセットを保存: {args.train_data_dir}")
+            train_dataset_dict = DatasetDict({"train": tokenized_datasets["train"]})
+            train_dataset_dict.save_to_disk(args.train_data_dir)
+        
+        # validation
+        if "validation" in tokenized_datasets:
+            os.makedirs(args.valid_data_dir, exist_ok=True)
+            print(f"検証データセットを保存: {args.valid_data_dir}")
+            valid_dataset_dict = DatasetDict({"validation": tokenized_datasets["validation"]})
+            valid_dataset_dict.save_to_disk(args.valid_data_dir)
+        
+        # test
+        if "test" in tokenized_datasets:
+            os.makedirs(args.test_data_dir, exist_ok=True)
+            print(f"テストデータセットを保存: {args.test_data_dir}")
+            test_dataset_dict = DatasetDict({"test": tokenized_datasets["test"]})
+            test_dataset_dict.save_to_disk(args.test_data_dir)
+            
+            # テストデータのプレーンテキスト版も保存
+            if hasattr(args, 'test_plain_output'):
+                print(f"テスト用プレーンテキストを保存: {args.test_plain_output}")
+                with open(args.test_plain_output, "w", encoding="utf-8") as f:
+                    for i in range(min(len(tokenized_datasets["test"]), 100)):  # サンプル100件のみ表示
+                        if i < len(tokenized_datasets["test"]) and "input_ids" in tokenized_datasets["test"][i]:
+                            sample_ids = tokenized_datasets["test"][i]["input_ids"]
+                            if hasattr(args, 'hf_tokenizer'):
+                                sample_text = args.hf_tokenizer.decode(sample_ids)
+                            else:
+                                sample_text = f"[トークンID]: {sample_ids[:50]}"
+                            f.write(f"サンプル {i+1}:\n{sample_text}\n\n" + "-" * 80 + "\n\n")
+        
+        print("\nデータセットの保存が完了しました。各スプリットは以下のディレクトリにあります:")
+        print(f"  train: {args.train_data_dir}")
+        print(f"  validation: {args.valid_data_dir}")
+        print(f"  test: {args.test_data_dir}")
+        print("\n利用する場合は --use_local_dataset --local_data_dir=\"{親ディレクトリ}\" を指定してください。")
+    
     return tokenized_datasets
+
+
+
 
 def load_tokenizer_megagon(tokenizer_name):
     """megagonlabs/t5-base-japanese-webなどのトークナイザーをロード"""
@@ -188,6 +425,7 @@ def load_tokenizer_megagon(tokenizer_name):
     
     return jp_tokenizer, hf_tokenizer
 
+
 def main():
     # コマンドライン引数を解析
     args = parse_args()
@@ -215,27 +453,97 @@ def main():
     
     print(f"[MASK]トークンID: {mask_token_id}")
     
+    # データセット準備では、トレーニング・テスト・検証データが自動的に作成されます
+    
     # データセットの準備
+    print(f"データディレクトリ: {args.local_data_dir}")
+    print(f"  - 訓練: {args.train_data_dir}")
+    print(f"  - 検証: {args.valid_data_dir}")
+    print(f"  - テスト: {args.test_data_dir}")
+    
     if args.use_local_dataset:
-        print(f"ローカルデータセットを使用: {args.local_data_dir}")
+        print(f"ローカルデータセットを使用します")
         # ローカルデータセットの読み込み
-        from datasets import load_from_disk
+        dataset = {}
+        
+        # 各スプリットを読み込み
         try:
-            dataset = load_from_disk(args.local_data_dir)
-            print("データセットを正常にロードしました")
+            # 最も柔軟に対応できるよう、各ディレクトリの存在をチェック
+            
+            # 1. 旧フォーマット（単一ディレクトリ）
+            if os.path.exists(os.path.join(args.local_data_dir, "dataset_info.json")):
+                print("単一ディレクトリ形式のデータセットを読み込み中...")
+                full_dataset = load_from_disk(args.local_data_dir)
+                dataset = full_dataset
+                print("データセットを正常にロードしました")
+                
+            # 2. 新フォーマット（完全なスプリット別ディレクトリ）
+            elif os.path.exists(args.train_data_dir) and os.path.exists(args.valid_data_dir) and os.path.exists(args.test_data_dir):
+                print("スプリット別ディレクトリ形式のデータセットを読み込み中...")
+                dataset = {}
+                
+                # 各スプリットを個別に読み込み
+                if os.path.exists(args.train_data_dir):
+                    try:
+                        train_dataset = load_from_disk(args.train_data_dir)
+                        dataset["train"] = train_dataset["train"] if "train" in train_dataset else train_dataset
+                        print(f"訓練データを読み込みました: {len(dataset['train'])} 件")
+                    except Exception as e:
+                        print(f"訓練データの読み込みに失敗: {e}")
+                
+                if os.path.exists(args.valid_data_dir):
+                    try:
+                        valid_dataset = load_from_disk(args.valid_data_dir)
+                        dataset["validation"] = valid_dataset["validation"] if "validation" in valid_dataset else valid_dataset
+                        print(f"検証データを読み込みました: {len(dataset['validation'])} 件")
+                    except Exception as e:
+                        print(f"検証データの読み込みに失敗: {e}")
+                
+                if os.path.exists(args.test_data_dir):
+                    try:
+                        test_dataset = load_from_disk(args.test_data_dir)
+                        dataset["test"] = test_dataset["test"] if "test" in test_dataset else test_dataset
+                        print(f"テストデータを読み込みました: {len(dataset['test'])} 件")
+                    except Exception as e:
+                        print(f"テストデータの読み込みに失敗: {e}")
+                
+                if not dataset:
+                    raise ValueError("データセットが空です")
+                print("利用可能なスプリット:", list(dataset.keys()))
+            
+            # 3. 部分的なスプリット（訓練データのみがあればOK）
+            elif os.path.exists(args.train_data_dir):
+                print("訓練データのみのディレクトリ形式を読み込み中...")
+                dataset = {}
+                
+                try:
+                    train_dataset = load_from_disk(args.train_data_dir)
+                    dataset["train"] = train_dataset["train"] if "train" in train_dataset else train_dataset
+                    print(f"訓練データを読み込みました: {len(dataset['train'])} 件")
+                except Exception as e:
+                    print(f"訓練データの読み込みに失敗: {e}")
+                    raise
+                    
+                print("検証データとテストデータはありません。必要に応じて自動的に作成されます。")
+            else:
+                raise FileNotFoundError(f"ディレクトリ構造が想定と異なります: {args.local_data_dir}")
         except Exception as e:
             print(f"ローカルデータセットのロードに失敗しました: {e}")
             print("Hugging Faceからデータセットをロードします...")
-            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, args.max_seq_len)
+            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, 
+                                            args.max_seq_len, max_valid_samples=1000, args=args)
     else:
         # Hugging Faceからデータセットを準備
-        dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, args.max_seq_len)
+        print("Hugging Faceからデータセットをロードして準備します")
+        dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, 
+                                         args.max_seq_len, max_valid_samples=1000, args=args)
         
-        # 将来の使用のためにローカルに保存
-        if not is_colab:  # Colab環境ではディスク容量節約のため保存しない
-            os.makedirs(args.local_data_dir, exist_ok=True)
-            print(f"データセットをローカルに保存: {args.local_data_dir}")
-            dataset.save_to_disk(args.local_data_dir)
+        # 将来の使用のためにローカルに保存は prepare_dataset_from_hf 内で行われる
+    
+    # データセット準備のみのモードの場合は終了
+    if args.prepare_datasets:
+        print("データセット準備モードが有効なため、トレーニングをスキップします。")
+        return
     
     # モデル設定
     model_config = ModelConfig(
@@ -275,6 +583,12 @@ def main():
         output_dir=args.output_dir,
         run_name=f"wiki40b_ja_diffusion_megagon_{args.hidden_size}h_{args.num_layers}l"
     )
+    
+    # Google Driveの検出（Colabの場合）
+    if is_colab and "/content/drive/" in args.output_dir:
+        print("Google Driveが検出されました。結果をGoogle Driveに保存します。")
+        print(f"実行ID: {paths_config.run_name}")
+        print(f"出力ディレクトリ: {args.output_dir}")
     
     # モデルのインスタンス化
     model = WaveNetworkLM(model_config)
@@ -355,9 +669,22 @@ def main():
     if "train" in dataset:
         print(f"トレーニングデータセットの最初の項目のキー: {list(dataset['train'][0].keys())}")
     
+    # 検証データセットとテストデータセットは、prepare_dataset_from_hf関数内で
+    # 自動的に作成されるため、ここでの処理は不要になりました
+    
     # データセットをラッパーでラップしてcollatorに適した形式に変換
-    train_dataset = HFDatasetWrapper(dataset["train"]) if "train" in dataset else None
-    valid_dataset = HFDatasetWrapper(dataset["validation"]) if "validation" in dataset else None
+    # トークナイザーも渡して自動トークン化できるようにする
+    train_dataset = HFDatasetWrapper(
+        dataset["train"], 
+        tokenizer=hf_tokenizer,  # HF tokenizer を使用
+        max_length=args.max_seq_len
+    ) if "train" in dataset else None
+    
+    valid_dataset = HFDatasetWrapper(
+        dataset["validation"], 
+        tokenizer=hf_tokenizer,
+        max_length=args.max_seq_len
+    ) if "validation" in dataset else None
     
     # トレーナーの初期化
     try:
@@ -370,8 +697,14 @@ def main():
             seed=args.seed
         )
         
+        # 訓練の実行前に重要なメッセージを表示
+        print("\n==== 重要: データセット情報 ====")
+        print(f"訓練データ件数: {'不明' if 'train' not in dataset else len(dataset['train'])} 件")
+        print(f"検証データ件数: {'不明' if 'validation' not in dataset else len(dataset['validation'])} 件")
+        print(f"HFDatasetWrapperでラップ済み: {isinstance(train_dataset, HFDatasetWrapper)}")
+        
         # Diffusion訓練の実行
-        print("Diffusionモデルの学習を開始します...")
+        print("\nDiffusionモデルの学習を開始します...")
         trainer.train_diffusion()
         
         # 最終チェックポイントの保存
@@ -380,7 +713,12 @@ def main():
         # リソースの解放
         trainer.close()
         
-        print("学習が完了しました。最終モデルが保存されました。")
+        print("学習が完了しました。最終モデルが保存されました。\n")
+        print("注意: このバージョンでは、データセットは以下のディレクトリ構造で保存されます:")
+        print(f"  {args.local_data_dir}/")
+        print(f"  ├── train/  # 訓練データ")
+        print(f"  ├── valid/  # 検証データ")
+        print(f"  └── test/   # テストデータ")
     except Exception as e:
         print(f"トレーニング中にエラーが発生しました: {e}")
         import traceback
