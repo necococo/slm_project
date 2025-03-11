@@ -49,7 +49,7 @@ def parse_args():
     
     return parser.parse_args()
 
-def prepare_dataset_from_hf(dataset_name, tokenizer, max_seq_len, max_valid_samples=1000):
+def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, max_valid_samples=1000):
     """Hugging Faceからデータセットをロードして準備する"""
     print(f"Hugging Faceからデータセット {dataset_name} をロード中...")
     dataset = load_dataset(dataset_name)
@@ -63,8 +63,8 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, max_seq_len, max_valid_samp
         tokenized = {"input_ids": [], "attention_mask": []}
         
         for text in examples["text"]:
-            # トークン化
-            token_ids = tokenizer.encode(text, add_special_tokens=False)
+            # トークン化 - 直接Hugging Faceトークナイザーを使用
+            token_ids = hf_tokenizer.encode(text, add_special_tokens=False)
             
             # 最大長に切り詰め
             if len(token_ids) > max_seq_len:
@@ -133,7 +133,7 @@ def load_tokenizer_megagon(tokenizer_name):
     jp_tokenizer.mask_token_id = hf_tokenizer.mask_token_id
     print(f"JapaneseTokenizerのマスクトークン: {jp_tokenizer.mask_token}, ID: {jp_tokenizer.mask_token_id}")
     
-    return jp_tokenizer
+    return jp_tokenizer, hf_tokenizer
 
 def main():
     # コマンドライン引数を解析
@@ -157,7 +157,7 @@ def main():
         print("ローカル環境で実行中")
     
     # トークナイザーのロード
-    tokenizer = load_tokenizer_megagon(args.tokenizer_name)
+    tokenizer, hf_tokenizer = load_tokenizer_megagon(args.tokenizer_name)
     mask_token_id = tokenizer.mask_token_id
     
     print(f"[MASK]トークンID: {mask_token_id}")
@@ -173,10 +173,10 @@ def main():
         except Exception as e:
             print(f"ローカルデータセットのロードに失敗しました: {e}")
             print("Hugging Faceからデータセットをロードします...")
-            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, args.max_seq_len)
+            dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, args.max_seq_len)
     else:
         # Hugging Faceからデータセットを準備
-        dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, args.max_seq_len)
+        dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, hf_tokenizer, args.max_seq_len)
         
         # 将来の使用のためにローカルに保存
         if not is_colab:  # Colab環境ではディスク容量節約のため保存しない
@@ -188,7 +188,7 @@ def main():
     model_config = ModelConfig(
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
-        vocab_size=tokenizer._tokenizer.vocab_size if hasattr(tokenizer, '_tokenizer') else len(tokenizer.sp),
+        vocab_size=hf_tokenizer.vocab_size,
         max_seq_len=args.max_seq_len,
         dropout_prob=0.2,
         use_rope=True,
@@ -235,29 +235,33 @@ def main():
     test_text = "これはトークナイザーのテストです。日本語Wikipediaで学習されたモデルを使います。"
     print(f"テスト文: {test_text}")
     
-    # トークン化
-    tokens_ids = tokenizer.encode(test_text)
-    if hasattr(tokenizer, '_tokenizer') and hasattr(tokenizer._tokenizer, 'convert_ids_to_tokens'):
-        tokens_str = tokenizer._tokenizer.convert_ids_to_tokens(tokens_ids)
-        print(f"トークンID: {tokens_ids}")
-        print(f"トークン: {tokens_str}")
-    else:
-        print(f"トークンID: {tokens_ids}")
+    # トークン化 - JapaneseTokenizerとHugging Faceトークナイザーの両方をテスト
+    jp_tokens_ids = tokenizer.encode(test_text)
+    hf_tokens_ids = hf_tokenizer.encode(test_text, add_special_tokens=False)
     
-    # デコード
+    print(f"JapaneseTokenizer トークンID: {jp_tokens_ids}")
+    print(f"HuggingFace トークンID: {hf_tokens_ids}")
+    print(f"一致しているか: {jp_tokens_ids == hf_tokens_ids}")
+    
+    # トークン文字列表示
+    tokens_str = hf_tokenizer.convert_ids_to_tokens(hf_tokens_ids)
+    print(f"トークン: {tokens_str}")
+    
+    # デコード - 両方のトークナイザーをテスト
     try:
-        decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
-    except TypeError:
-        # 引数エラーの場合は通常のデコードを行い、手動で特殊トークンを削除
-        decoded_text = tokenizer.decode(tokens_ids)
-        decoded_text = decoded_text.replace("</s>", "").replace("<s>", "")
+        jp_decoded_text = tokenizer.decode(jp_tokens_ids)
+        print(f"JapaneseTokenizer デコード結果: {jp_decoded_text}")
+    except Exception as e:
+        print(f"JapaneseTokenizer デコードエラー: {e}")
     
-    print(f"デコード結果: {decoded_text}")
+    hf_decoded_text = hf_tokenizer.decode(hf_tokens_ids, skip_special_tokens=True)
+    print(f"HuggingFace デコード結果: {hf_decoded_text}")
     
     # 特殊トークンの確認
     print(f"\n特殊トークン情報:")
     print(f"  MASK: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
-    print(f"  語彙サイズ: {len(tokenizer._tokenizer.vocab) if hasattr(tokenizer, '_tokenizer') and hasattr(tokenizer._tokenizer, 'vocab') else tokenizer._tokenizer.vocab_size if hasattr(tokenizer, '_tokenizer') else 'Unknown'}")
+    print(f"  HF MASK: {hf_tokenizer.mask_token} (ID: {hf_tokenizer.mask_token_id})")
+    print(f"  語彙サイズ: {hf_tokenizer.vocab_size}")
     
     # トレーニングデータの最初のバッチをチェック
     print("\n=== トレーニングデータのサンプル ===")
@@ -272,12 +276,7 @@ def main():
             print(f"サンプルのトークンID (最初の20個): {sample_ids[:20]}")
             
             # トークンIDをデコードして表示
-            try:
-                sample_text = tokenizer.decode(sample_ids, skip_special_tokens=True)
-            except TypeError:
-                sample_text = tokenizer.decode(sample_ids)
-                sample_text = sample_text.replace("</s>", "").replace("<s>", "")
-            
+            sample_text = hf_tokenizer.decode(sample_ids, skip_special_tokens=True)
             print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
     else:
         print("トレーニングデータセットが見つかりません")
