@@ -90,18 +90,36 @@ class HFDatasetWrapper(Dataset):
                 # トークナイザーを使ってテキストをトークン化
                 try:
                     text = item["text"]
-                    # _tokenizerがある場合（transformersトークナイザー）
-                    if hasattr(self.tokenizer, '_tokenizer'):
-                        encodings = self.tokenizer._tokenizer.encode(
+                    # AutoTokenizerの場合
+                    if hasattr(self.tokenizer, 'encode') and callable(self.tokenizer.encode):
+                        if hasattr(self.tokenizer, 'add_special_tokens'):
+                            # Transformersトークナイザー
+                            input_ids = self.tokenizer.encode(
+                                text, 
+                                add_special_tokens=False,
+                                max_length=self.max_length, 
+                                truncation=True
+                            )
+                        else:
+                            # 特殊トークン追加オプションがない場合
+                            input_ids = self.tokenizer.encode(text)[:self.max_length]
+                    # JapaneseTokenizerのラッパー
+                    elif hasattr(self.tokenizer, '_tokenizer'):
+                        input_ids = self.tokenizer._tokenizer.encode(
                             text, 
                             add_special_tokens=False,
                             max_length=self.max_length, 
                             truncation=True
                         )
-                        input_ids = encodings
+                    # SentencePieceProcessorを使用
                     else:
-                        # SentencePieceProcessorを使用
                         input_ids = self.tokenizer.encode(text)[:self.max_length]
+                        
+                    # 空のトークン列や失敗した場合の対応
+                    if not input_ids:
+                        if idx % 1000 == 0:  # エラーログの頻度を減らす
+                            print(f"警告: トークン化で空のリストが返されました (idx={idx})")
+                        return {"input_ids": [], "attention_mask": [], "labels": []}
                         
                     attention_mask = [1] * len(input_ids)
                     # labelsも含める（diffusionモデル用）
@@ -227,16 +245,32 @@ def tokenize_function(examples, hf_tokenizer, max_seq_len):
     """テキストをトークン化する関数"""
     tokenized = {"input_ids": [], "attention_mask": []}
     
+    # テキストキーの存在確認と処理
+    if "text" not in examples:
+        print(f"警告: 'text'キーが見つかりません。利用可能なキー: {list(examples.keys())}")
+        return tokenized
+    
     for text in examples["text"]:
-        # トークン化 - 直接Hugging Faceトークナイザーを使用
-        token_ids = hf_tokenizer.encode(text, add_special_tokens=False)
-        
-        # 最大長に切り詰め
-        if len(token_ids) > max_seq_len:
-            token_ids = token_ids[:max_seq_len]
-        
-        # 注意マスクを作成（すべて1）
-        attn_mask = [1] * len(token_ids)
+        if not text:  # 空のテキストはスキップ
+            tokenized["input_ids"].append([])
+            tokenized["attention_mask"].append([])
+            continue
+            
+        try:
+            # トークン化 - 直接Hugging Faceトークナイザーを使用
+            token_ids = hf_tokenizer.encode(text, add_special_tokens=False)
+            
+            # 最大長に切り詰め
+            if len(token_ids) > max_seq_len:
+                token_ids = token_ids[:max_seq_len]
+            
+            # 注意マスクを作成（すべて1）
+            attn_mask = [1] * len(token_ids)
+        except Exception as e:
+            print(f"トークン化エラー: {e} テキスト: {text[:50]}...")
+            # エラー時は空のリストを追加
+            token_ids = []
+            attn_mask = []
         
         tokenized["input_ids"].append(token_ids)
         tokenized["attention_mask"].append(attn_mask)
@@ -713,6 +747,41 @@ def main():
     if "train" in dataset:
         print(f"トレーニングデータセットの最初の項目のキー: {list(dataset['train'][0].keys())}")
     
+    # データセット形式の確認
+    print("\n=== データセット形式の確認 ===")
+    if "train" in dataset and len(dataset["train"]) > 0:
+        first_item = dataset["train"][0]
+        if isinstance(first_item, dict):
+            print(f"最初のトレーニングアイテムのキー: {list(first_item.keys())}")
+            if "text" in first_item and "input_ids" not in first_item:
+                print("データセットには 'text' キーのみが含まれています。自動的にトークン化を行います。")
+            elif "input_ids" in first_item:
+                print("データセットには既に 'input_ids' が含まれています。")
+        else:
+            print(f"予期しない形式のデータセット: {type(first_item)}")
+    
+    # トークナイザーが正しく動作することを確認
+    tokenizer_for_wrapper = hf_tokenizer  # デフォルトはHuggingFaceトークナイザー
+    
+    # サンプルテキストでトークナイザーをテスト
+    test_text = "これはトークナイザーのテストです。"
+    try:
+        test_tokens_hf = hf_tokenizer.encode(test_text, add_special_tokens=False)
+        print(f"HuggingFaceトークナイザーのテスト結果: {test_tokens_hf[:10]}...")
+        # 成功したら、このトークナイザーを使用
+        tokenizer_for_wrapper = hf_tokenizer
+    except Exception as e1:
+        print(f"HuggingFaceトークナイザーのエラー: {e1}")
+        try:
+            # JapaneseTokenizerでも試す
+            test_tokens_jp = tokenizer.encode(test_text)
+            print(f"JapaneseTokenizerのテスト結果: {test_tokens_jp[:10]}...")
+            # 成功したら、このトークナイザーを使用
+            tokenizer_for_wrapper = tokenizer
+        except Exception as e2:
+            print(f"JapaneseTokenizerのエラー: {e2}")
+            print("警告: どちらのトークナイザーも正常に動作しません。")
+    
     # 検証データセットとテストデータセットは、prepare_dataset_from_hf関数内で
     # 自動的に作成されるため、ここでの処理は不要になりました
     
@@ -720,13 +789,13 @@ def main():
     # トークナイザーも渡して自動トークン化できるようにする
     train_dataset = HFDatasetWrapper(
         dataset["train"], 
-        tokenizer=hf_tokenizer,  # HF tokenizer を使用
+        tokenizer=tokenizer_for_wrapper,  # テスト済みトークナイザーを使用
         max_length=args.max_seq_len
     ) if "train" in dataset else None
     
     valid_dataset = HFDatasetWrapper(
         dataset["validation"], 
-        tokenizer=hf_tokenizer,
+        tokenizer=tokenizer_for_wrapper,  # テスト済みトークナイザーを使用
         max_length=args.max_seq_len
     ) if "validation" in dataset else None
     
