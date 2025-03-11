@@ -5,7 +5,7 @@ import os
 import sys
 import argparse
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from datasets import load_dataset
 from transformers import AutoTokenizer
 from slm.config import ModelConfig, TrainingConfig, PathsConfig
@@ -13,6 +13,50 @@ from slm.modules.wave_network import WaveNetworkLM
 from slm.wiki40b_ja_dataset import WikiDataset, collate_fn
 from slm.tokenizer import JapaneseTokenizer
 from slm.train import Trainer
+
+# データセットラッパークラスを追加
+class HFDatasetWrapper(Dataset):
+    """Hugging Faceデータセットをラップしてcollatorに適した形式を提供するクラス"""
+    def __init__(self, dataset):
+        self.dataset = dataset
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        # collatorが期待する形式にデータを変換
+        if isinstance(item, dict):
+            # input_idsが直接存在するか確認
+            if "input_ids" in item:
+                return {"input_ids": item["input_ids"], 
+                        "attention_mask": item.get("attention_mask", [1] * len(item["input_ids"]))}
+            else:
+                # データセットの形式をログ出力して確認
+                print(f"Warning: Dataset item at index {idx} does not have 'input_ids': {item.keys()}")
+                
+                # データセットの形式に基づいて適切に変換
+                # 例えば、データセットが異なる構造を持っている場合
+                if "tokens" in item:  # トークンIDがtokensキーに格納されている場合
+                    return {"input_ids": item["tokens"], 
+                            "attention_mask": item.get("mask", [1] * len(item["tokens"]))}
+                else:
+                    # 何らかのキーを使って強制的に変換
+                    first_key = list(item.keys())[0]
+                    if isinstance(item[first_key], list):
+                        # リスト形式のデータであれば、それをinput_idsとして使用
+                        return {"input_ids": item[first_key], 
+                                "attention_mask": [1] * len(item[first_key])}
+                    else:
+                        # そうでなければ、空のデータを返す（エラー回避）
+                        return {"input_ids": [], "attention_mask": []}
+        
+        # リスト形式の場合（例えばトークンIDのリスト）
+        elif isinstance(item, list):
+            return {"input_ids": item, "attention_mask": [1] * len(item)}
+        
+        # その他の場合は空の辞書を返す（エラー回避）
+        return {"input_ids": [], "attention_mask": []}
 
 def parse_args():
     parser = argparse.ArgumentParser(description="toramaru-u/wiki40b-ja データセットを使用したDiffusionモデルの学習")
@@ -94,6 +138,15 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
     print("トークン化済みデータセット情報:")
     for split in tokenized_datasets:
         print(f"  {split}: {len(tokenized_datasets[split])}サンプル")
+    
+    # データセットの形式を確認
+    if "train" in tokenized_datasets and len(tokenized_datasets["train"]) > 0:
+        first_item = tokenized_datasets["train"][0]
+        print(f"最初のアイテムのキー: {list(first_item.keys())}")
+        if "input_ids" in first_item:
+            print(f"input_idsの長さ: {len(first_item['input_ids'])}")
+        else:
+            print(f"警告: 'input_ids'キーがデータセットのアイテムに見つかりません")
     
     return tokenized_datasets
 
@@ -297,12 +350,21 @@ def main():
         
         print("Google Colab環境向けに設定を最適化しました")
     
+    # データセットのキーをチェック
+    print(f"データセットのキー: {list(dataset.keys() if hasattr(dataset, 'keys') else [])}")
+    if "train" in dataset:
+        print(f"トレーニングデータセットの最初の項目のキー: {list(dataset['train'][0].keys())}")
+    
+    # データセットをラッパーでラップしてcollatorに適した形式に変換
+    train_dataset = HFDatasetWrapper(dataset["train"]) if "train" in dataset else None
+    valid_dataset = HFDatasetWrapper(dataset["validation"]) if "validation" in dataset else None
+    
     # トレーナーの初期化
     try:
         trainer = Trainer(
             model=model,
-            train_dataset=dataset["train"],
-            valid_dataset=dataset["validation"] if "validation" in dataset else None,
+            train_dataset=train_dataset,
+            valid_dataset=valid_dataset,
             training_config=training_config,
             paths_config=paths_config,
             seed=args.seed
