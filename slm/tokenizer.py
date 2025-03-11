@@ -54,12 +54,31 @@ class JapaneseTokenizer:
         """
         return self.sp.encode(text, out_type=int)
 
-    def decode(self, token_ids: List[int]) -> str:
+    def decode(self, token_ids: List[int], skip_special_tokens: bool = True) -> str:
         """
         How:
             ID列をテキストに変換します。
+            
+        Args:
+            token_ids: デコードするトークンIDのリスト
+            skip_special_tokens: 特殊トークン（</s>など）をスキップするか
+            
+        Returns:
+            デコードされたテキスト
         """
-        return self.sp.decode(token_ids)
+        if hasattr(self, '_tokenizer') and hasattr(self._tokenizer, 'decode'):
+            # transformersトークナイザーの場合、skip_special_tokensオプションを使用
+            return self._tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
+        else:
+            # SentencePieceの場合
+            text = self.sp.decode(token_ids)
+            
+            # 特殊トークンの削除が要求された場合
+            if skip_special_tokens:
+                # </s>トークンを削除
+                text = text.replace("</s>", "")
+            
+            return text
 
     def tokenize_batch(self, texts: List[str]) -> List[List[int]]:
         """
