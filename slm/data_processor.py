@@ -117,20 +117,11 @@ class SimpleDataProcessor:
         """
         # データセットのロード
         try:
+            # 直接データセットを読み込む
             dataset = load_from_disk(dataset_path)
             print(f"データセットを {dataset_path} からロードしました")
             
-            # データセット形式を確認
-            if isinstance(dataset, dict):
-                # 訓練データを取得
-                if "train" in dataset:
-                    train_dataset = dataset["train"]
-                else:
-                    print("警告: データセットに'train'スプリットがありません")
-                    train_dataset = list(dataset.values())[0]
-                return train_dataset
-            else:
-                return dataset
+            return dataset
                 
         except Exception as e:
             print(f"データセットのロードに失敗しました: {e}")

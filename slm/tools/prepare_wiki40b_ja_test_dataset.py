@@ -166,9 +166,8 @@ def prepare_dataset(args):
     tokenized_dataset_path = os.path.join(args.output_dir, "tokenized_dataset")
     print(f"トークン化済みデータセットを保存中: {tokenized_dataset_path}")
     
-    # DatasetDictに変換して保存
-    dataset_dict = DatasetDict({"test": tokenized_dataset})
-    dataset_dict.save_to_disk(tokenized_dataset_path)
+    # 直接データセットを保存
+    tokenized_dataset.save_to_disk(tokenized_dataset_path)
     
     print("データセットのサンプルを表示:")
     if len(tokenized_dataset) > 0:

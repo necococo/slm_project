@@ -389,22 +389,22 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
         if "train" in tokenized_datasets:
             os.makedirs(args.train_data_dir, exist_ok=True)
             print(f"\nトレーニングデータセットを保存: {args.train_data_dir}")
-            train_dataset_dict = DatasetDict({"train": tokenized_datasets["train"]})
-            train_dataset_dict.save_to_disk(args.train_data_dir)
+            # DatasetDictではなく直接データセットを保存
+            tokenized_datasets["train"].save_to_disk(args.train_data_dir)
         
         # validation
         if "validation" in tokenized_datasets:
             os.makedirs(args.valid_data_dir, exist_ok=True)
             print(f"検証データセットを保存: {args.valid_data_dir}")
-            valid_dataset_dict = DatasetDict({"validation": tokenized_datasets["validation"]})
-            valid_dataset_dict.save_to_disk(args.valid_data_dir)
+            # DatasetDictではなく直接データセットを保存
+            tokenized_datasets["validation"].save_to_disk(args.valid_data_dir)
         
         # test
         if "test" in tokenized_datasets:
             os.makedirs(args.test_data_dir, exist_ok=True)
             print(f"テストデータセットを保存: {args.test_data_dir}")
-            test_dataset_dict = DatasetDict({"test": tokenized_datasets["test"]})
-            test_dataset_dict.save_to_disk(args.test_data_dir)
+            # DatasetDictではなく直接データセットを保存
+            tokenized_datasets["test"].save_to_disk(args.test_data_dir)
             
             # テストデータのプレーンテキスト版も保存 - 純粋なテキストのみ
             if hasattr(args, 'test_plain_output'):
