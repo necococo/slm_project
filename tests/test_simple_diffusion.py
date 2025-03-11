@@ -21,19 +21,14 @@ def parse_args():
                         help="最大シーケンス長")
     parser.add_argument("--mask_token", type=str, default="<mask>",
                         help="マスクトークン")
-    parser.add_argument("--test_text", type=str, 
-                        default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
-                                "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
-                                "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
-                        help="テスト用テキスト")
     parser.add_argument("--timesteps", type=int, default=5,
                         help="タイムステップ数")
     parser.add_argument("--mask_prob_min", type=float, default=0.0,
                         help="最小マスク確率")
     parser.add_argument("--mask_prob_max", type=float, default=0.8,
                         help="最大マスク確率")
-    parser.add_argument("--dataset_path", type=str, default=None,
-                        help="データセットのパス（指定するとデータセットからテキストを使用）")
+    parser.add_argument("--dataset_path", type=str, required=True,
+                        help="データセットのパス（必須）")
     
     return parser.parse_args()
 
@@ -49,29 +44,31 @@ def main():
         mask_token=args.mask_token
     )
     
-    # データセットのロード（指定されている場合）
-    sample_text = args.test_text
-    if args.dataset_path:
-        try:
-            # データセットのロード
-            dataset = processor.load_dataset(args.dataset_path)
-            dataset_size = len(dataset)
-            
-            # ランダムにサンプルを選択
-            import random
-            random_idx = random.randint(0, dataset_size - 1)
-            random_sample = dataset[random_idx]
-            
-            # サンプルのテキストを取得
-            if "text" in random_sample:
-                sample_text = random_sample["text"]
-                print(f"\n=== データセットからランダムに選択したサンプル（インデックス: {random_idx}/{dataset_size-1}） ===")
-                print(f"元のテキスト（プレビュー）: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
-            else:
-                print("警告: 選択したサンプルに'text'フィールドがありません。デフォルトテキストを使用します。")
-        except Exception as e:
-            print(f"データセットのロード中にエラーが発生しました: {e}")
-            print("デフォルトのテストテキストを使用します。")
+    # データセットのロード
+    try:
+        # データセットのロード
+        dataset = processor.load_dataset(args.dataset_path)
+        dataset_size = len(dataset)
+        
+        # ランダムにサンプルを選択
+        import random
+        random_idx = random.randint(0, dataset_size - 1)
+        random_sample = dataset[random_idx]
+        
+        # サンプルのテキストを取得
+        if "text" in random_sample:
+            sample_text = random_sample["text"]
+            print(f"\n=== データセットからランダムに選択したサンプル（インデックス: {random_idx}/{dataset_size-1}） ===")
+            print(f"元のテキスト（プレビュー）: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
+        else:
+            print("エラー: 選択したサンプルに'text'フィールドがありません")
+            print(f"サンプルのキー: {list(random_sample.keys())}")
+            print("テストを終了します。")
+            return
+    except Exception as e:
+        print(f"データセットのロード中にエラーが発生しました: {e}")
+        print("テストを終了します。")
+        return
     
     # テキストのトークン化
     tokens = processor.tokenize_text(sample_text)

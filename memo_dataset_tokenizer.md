@@ -23,6 +23,13 @@ EOS: \</s>
 BOS: \<s> # 文の始まりトークンを一応入れた
 
 
+  # データプロセッサーのテスト
+  python -m tests.test_data_processor --dataset_path=/path/to/dataset
+
+  # Diffusionモデルのテスト
+  python -m tests.test_simple_diffusion --dataset_path=/path/to/dataset
+
+  
 
   # データセット準備
   python slm/train_wiki40b_ja_diffusion_megagon_fixed2.py \
@@ -34,3 +41,5 @@ BOS: \<s> # 文の始まりトークンを一応入れた
       --use_local_dataset \
       --local_data_dir="/content/drive/MyDrive/slm/data/wiki40b_ja" \
       --output_dir="/content/drive/MyDrive/slm/outputs"
+
+

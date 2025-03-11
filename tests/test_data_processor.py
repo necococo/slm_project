@@ -20,15 +20,10 @@ def parse_args():
                         help="最大シーケンス長")
     parser.add_argument("--mask_token", type=str, default="<mask>",
                         help="マスクトークン")
-    # parser.add_argument("--test_text", type=str, 
-    #                     default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
-    #                             "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
-    #                             "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
-    #                     help="テスト用テキスト")
     parser.add_argument("--mask_ratio", type=float, default=0.2,
                         help="マスク割合")
-    parser.add_argument("--dataset_path", type=str, default="/content/drive/MyDrive/slm/data/wiki40b_ja/train",
-                        help="データセットのパス（指定するとデータセットのテストも行う）")
+    parser.add_argument("--dataset_path", type=str, required=True,
+                        help="データセットのパス（必須）")
     
     return parser.parse_args()
 
@@ -45,7 +40,7 @@ def main():
     )
     
     print("\n=== マスキングとデコードのテスト ===")
-    print(f"テストテキスト: {args.test_text[:50]}...")
+    # print(f"テストテキスト: {args.test_text[:50]}...")
     print(f"マスク割合: {args.mask_ratio:.2f}")
     
     # データセットのテスト（指定されている場合）
@@ -68,13 +63,14 @@ def main():
             # マスキングとデコードのテスト
             processor.test_decode_with_mask(sample_text, args.mask_ratio)
         else:
-            print("警告: 選択したサンプルに'text'フィールドがありません")
+            print("エラー: 選択したサンプルに'text'フィールドがありません")
             print(f"サンプルのキー: {list(random_sample.keys())}")
-            # フォールバックとして引数のテキストを使用
-            processor.test_decode_with_mask(args.test_text, args.mask_ratio)
+            print("テストを終了します。")
+            return
     else:
-        # データセットパスが指定されていない場合は引数のテキストを使用
-        processor.test_decode_with_mask(args.test_text, args.mask_ratio)
+        print("エラー: データセットパスが指定されていません。")
+        print("テストを終了します。")
+        return
     
     # 追加のデータセットテスト（指定されている場合）
     if args.dataset_path and not "text" in random_sample:
