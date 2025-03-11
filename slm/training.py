@@ -85,7 +85,7 @@ def setup_tokenizer_and_model(paths_config: PathsConfig, config):
     # トークナイザーのロード
     tokenizer_name = getattr(config, 'model_name', 'cl-tohoku/bert-base-japanese-whole-word-masking')
     print(f"トークナイザー {tokenizer_name} をロードしています...")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=paths_config.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=paths_config.cache_dir, use_fast=False)
     
     # モデル設定
     model_config = ModelConfig(

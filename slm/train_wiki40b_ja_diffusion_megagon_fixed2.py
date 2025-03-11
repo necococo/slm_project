@@ -432,7 +432,7 @@ def load_tokenizer_megagon(tokenizer_name):
     print(f"トークナイザー {tokenizer_name} をロード中...")
     
     # まずHuggingFaceからロード
-    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=False)
     
     # T5トークナイザーにはデフォルトのマスクトークンがないため、必要に応じて追加
     if not hasattr(hf_tokenizer, 'mask_token') or hf_tokenizer.mask_token is None:
