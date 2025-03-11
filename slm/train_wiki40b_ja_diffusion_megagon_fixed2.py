@@ -14,6 +14,9 @@ from slm.wiki40b_ja_dataset import WikiDataset, collate_fn
 from slm.tokenizer import JapaneseTokenizer
 from slm.train import Trainer
 
+# TOKENIZERS_PARALLELISMの警告を防ぐために環境変数を設定
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # データセットラッパークラスを追加
 class HFDatasetWrapper(Dataset):
     """Hugging Faceデータセットをラップしてcollatorに適した形式を提供するクラス
@@ -632,8 +635,20 @@ def main():
     print(f"テスト文: {test_text}")
     
     # トークン化 - JapaneseTokenizerとHugging Faceトークナイザーの両方をテスト
-    jp_tokens_ids = tokenizer.encode(test_text)
+    # JapaneseTokenizerにも特殊トークンを追加しないように明示
+    if hasattr(tokenizer, 'encode_no_special'):
+        jp_tokens_ids = tokenizer.encode_no_special(test_text)
+    else:
+        jp_tokens_ids = tokenizer.encode(test_text)
     hf_tokens_ids = hf_tokenizer.encode(test_text, add_special_tokens=False)
+    
+    # デバッグ用のトークン比較
+    if len(jp_tokens_ids) != len(hf_tokens_ids):
+        print(f"トークン数の不一致: jp={len(jp_tokens_ids)}, hf={len(hf_tokens_ids)}")
+        if len(jp_tokens_ids) > len(hf_tokens_ids):
+            # 余分なトークンを取り除く（通常はEOSトークン=1）
+            jp_tokens_ids = jp_tokens_ids[:-1]
+            print(f"JapaneseTokenizerの末尾トークンを取り除きました: {jp_tokens_ids}")
     
     print(f"JapaneseTokenizer トークンID: {jp_tokens_ids}")
     print(f"HuggingFace トークンID: {hf_tokens_ids}")

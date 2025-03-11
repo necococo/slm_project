@@ -56,6 +56,23 @@ class JapaneseTokenizer:
             テキストをID列に変換します。
         """
         return self.sp.encode(text, out_type=int)
+    
+    def encode_no_special(self, text: str) -> List[int]:
+        """
+        How:
+            特殊トークン（BOS、EOS）を追加せずにテキストをID列に変換します。
+            Hugging FaceのTokenizerのadd_special_tokens=Falseと同等です。
+        """
+        if hasattr(self, '_tokenizer'):
+            # transformersトークナイザーを使用
+            return self._tokenizer.encode(text, add_special_tokens=False)
+        else:
+            # 通常のencodeを使用し、末尾のEOSトークン（通常は1）を取り除く
+            tokens = self.sp.encode(text, out_type=int)
+            # EOSトークンが含まれている場合、取り除く
+            if tokens and tokens[-1] == 1:  # 1はよくあるEOSトークンID
+                return tokens[:-1]
+            return tokens
 
     def decode(self, token_ids: List[int], skip_special_tokens: bool = True) -> str:
         """
@@ -111,7 +128,8 @@ class JapaneseTokenizer:
                 self.tokenizer = tokenizer
                 
             def encode(self, text, out_type=int):
-                result = self.tokenizer.encode(text)
+                # add_special_tokensをFalseにして特殊トークンを追加しない
+                result = self.tokenizer.encode(text, add_special_tokens=False)
                 return result
                 
             def decode(self, ids, skip_special_tokens=True):
