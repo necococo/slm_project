@@ -111,8 +111,9 @@ class JapaneseTokenizer:
                 result = self.tokenizer.encode(text)
                 return result
                 
-            def decode(self, ids):
-                return self.tokenizer.decode(ids)
+            def decode(self, ids, skip_special_tokens=True):
+                """特殊トークンをスキップするオプション付きデコード"""
+                return self.tokenizer.decode(ids, skip_special_tokens=skip_special_tokens)
                 
             def piece_to_id(self, piece):
                 if piece in self.tokenizer.vocab:
