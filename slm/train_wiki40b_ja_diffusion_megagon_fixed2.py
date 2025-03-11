@@ -297,7 +297,7 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
         
         print("データセットを3分割しました")
         
-        # テスト用プレーンテキストも保存（可視化用）
+        # テスト用プレーンテキストも保存（可視化用）- 純粋なテキストのみ
         if args and hasattr(args, 'test_plain_output'):
             print(f"テスト用プレーンテキストデータを保存中: {args.test_plain_output}")
             
@@ -305,7 +305,9 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
             with open(args.test_plain_output, "w", encoding="utf-8") as f:
                 for item in tqdm(test_part, desc="テキスト保存中"):
                     text = item["text"]
-                    f.write(text + "\n\n" + "-" * 80 + "\n\n")
+                    f.write(text + "\n\n")
+            
+            print(f"テストサンプル {len(test_part)} 件を保存しました（余計なマークアップなし）")
             
             # トークナイザーも保存
             if hf_tokenizer:
@@ -363,18 +365,19 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
             test_dataset_dict = DatasetDict({"test": tokenized_datasets["test"]})
             test_dataset_dict.save_to_disk(args.test_data_dir)
             
-            # テストデータのプレーンテキスト版も保存
+            # テストデータのプレーンテキスト版も保存 - 純粋なテキストのみ
             if hasattr(args, 'test_plain_output'):
                 print(f"テスト用プレーンテキストを保存: {args.test_plain_output}")
                 with open(args.test_plain_output, "w", encoding="utf-8") as f:
+                    # 純粋なテキストのみ保存（復元後の結果）
                     for i in range(min(len(tokenized_datasets["test"]), 100)):  # サンプル100件のみ表示
                         if i < len(tokenized_datasets["test"]) and "input_ids" in tokenized_datasets["test"][i]:
                             sample_ids = tokenized_datasets["test"][i]["input_ids"]
                             if hasattr(args, 'hf_tokenizer'):
                                 sample_text = args.hf_tokenizer.decode(sample_ids)
                             else:
-                                sample_text = f"[トークンID]: {sample_ids[:50]}"
-                            f.write(f"サンプル {i+1}:\n{sample_text}\n\n" + "-" * 80 + "\n\n")
+                                sample_text = f"{sample_ids[:50]}"
+                            f.write(f"{sample_text}\n\n")
         
         print("\nデータセットの保存が完了しました。各スプリットは以下のディレクトリにあります:")
         print(f"  train: {args.train_data_dir}")
@@ -429,6 +432,11 @@ def load_tokenizer_megagon(tokenizer_name):
 def main():
     # コマンドライン引数を解析
     args = parse_args()
+    
+    # データセット準備モードの場合の特別メッセージ
+    if args.prepare_datasets:
+        print("==== データセット準備モード ====")
+        print("データセットの準備はCPUのみで実行されます。GPUは不要です。")
     
     # 乱数シード設定
     torch.manual_seed(args.seed)
@@ -543,9 +551,30 @@ def main():
     # データセット準備のみのモードの場合は終了
     if args.prepare_datasets:
         print("データセット準備モードが有効なため、トレーニングをスキップします。")
+        print("\n==== データセット準備完了 ====")
+        print(f"データディレクトリ: {args.local_data_dir}")
+        print(f"  - 訓練データ: {args.train_data_dir}")
+        print(f"  - 検証データ: {args.valid_data_dir}")
+        print(f"  - テストデータ: {args.test_data_dir}")
+        
+        if "train" in dataset:
+            print(f"訓練データサンプル数: {len(dataset['train'])}")
+        if "validation" in dataset:
+            print(f"検証データサンプル数: {len(dataset['validation'])}")
+        if "test" in dataset:
+            print(f"テストデータサンプル数: {len(dataset['test'])}")
+            
+        print("\n利用方法:")
+        print(f"  python slm/train_wiki40b_ja_diffusion_megagon_fixed2.py \\")
+        print(f"      --use_local_dataset \\")
+        print(f"      --local_data_dir=\"{args.local_data_dir}\" \\")
+        print(f"      --output_dir=\"/path/to/output\" \\")
+        print(f"      --batch_size=8 \\")
+        print(f"      --epochs=3")
         return
     
     # モデル設定
+    print("\nモデルを初期化します...")
     model_config = ModelConfig(
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
@@ -702,6 +731,9 @@ def main():
         print(f"訓練データ件数: {'不明' if 'train' not in dataset else len(dataset['train'])} 件")
         print(f"検証データ件数: {'不明' if 'validation' not in dataset else len(dataset['validation'])} 件")
         print(f"HFDatasetWrapperでラップ済み: {isinstance(train_dataset, HFDatasetWrapper)}")
+        print(f"GPU/TPU利用可能: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
         
         # Diffusion訓練の実行
         print("\nDiffusionモデルの学習を開始します...")
