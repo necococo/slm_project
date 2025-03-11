@@ -46,6 +46,9 @@ class JapaneseTokenizer:
         # 特殊トークン (transformers互換性のため)
         self.mask_token = "[MASK]" 
         self.mask_token_id = self.sp.piece_to_id(self.mask_token) if self.sp.piece_to_id(self.mask_token) >= 0 else 4
+        # パディングトークンとIDを追加
+        self.pad_token = "<pad>"
+        self.pad_token_id = 0  # T5トークナイザーでは0がパディングトークンID
 
     def encode(self, text: str) -> List[int]:
         """
@@ -127,6 +130,10 @@ class JapaneseTokenizer:
         # 特殊トークン
         instance.mask_token = tokenizer.mask_token if hasattr(tokenizer, 'mask_token') else "[MASK]"
         instance.mask_token_id = tokenizer.mask_token_id if hasattr(tokenizer, 'mask_token_id') else 4
+        
+        # パディングトークン
+        instance.pad_token = tokenizer.pad_token if hasattr(tokenizer, 'pad_token') else "<pad>"
+        instance.pad_token_id = tokenizer.pad_token_id if hasattr(tokenizer, 'pad_token_id') else 0
         
         return instance
 
