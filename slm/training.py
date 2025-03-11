@@ -25,15 +25,31 @@ def setup_environment(config):
     run_name = getattr(config, "run_name", None)
     
     # PathsConfigをconfigの各項目から初期化
-    paths_config = PathsConfig(
-        base_dir=getattr(config, "base_dir", os.getcwd()),
-        dataset_name=config.dataset_name,
-        dataset_subset=config.dataset_subset,
-        tokenizer_name=getattr(config, "tokenizer_name", "cl-tohoku/bert-base-japanese-whole-word-masking"),
-        output_dir=getattr(config, "output_dir", None),  # Noneを指定して自動生成させる
-        cache_dir=getattr(config, "cache_dir", os.path.join(os.getcwd(), "cache")),
-        run_name=run_name  # 実行名を渡す（Noneの場合は自動生成）
-    )
+    # 必須パラメータの確認
+    if not hasattr(config, "dataset_name"):
+        raise ValueError("dataset_nameはconfigで必須です")
+    
+    # PathsConfigへ渡す引数を辞書として構築
+    paths_args = {
+        "dataset_name": config.dataset_name,
+        "run_name": run_name
+    }
+    
+    # オプションのパラメータを設定
+    optional_params = {
+        "base_dir": os.getcwd(),
+        "dataset_subset": None,
+        "tokenizer_name": "cl-tohoku/bert-base-japanese-whole-word-masking",
+        "output_dir": None,
+        "cache_dir": os.path.join(os.getcwd(), "cache")
+    }
+    
+    # configに存在するパラメータを優先して使用
+    for param, default in optional_params.items():
+        paths_args[param] = getattr(config, param, default)
+    
+    # PathsConfigを初期化
+    paths_config = PathsConfig(**paths_args)
     # 正しいディレクトリ群を作成
     os.makedirs(paths_config.checkpoint_dir, exist_ok=True)
     os.makedirs(paths_config.visualization_path, exist_ok=True)
@@ -49,31 +65,14 @@ def load_dataset_from_disk_or_download(paths_config: PathsConfig, config):
         # データセットのロード
         dataset_name = paths_config.dataset_name
         dataset_subset = paths_config.dataset_subset
-        
-        # JGLUEデータセットは dataset_name のみ指定するように修正
-        if dataset_name == "shunk031/JGLUE":
-            print(f"データセット {dataset_name} をロードします...")
-            dataset = load_dataset(
-                dataset_name,
-                cache_dir=paths_config.cache_dir,
-                trust_remote_code=True  # JGLUEデータセットにはカスタムコードが含まれているため
-            )
-        elif dataset_subset:
-            print(f"データセット {dataset_name}/{dataset_subset} をロードします...")
-            dataset = load_dataset(
-                dataset_name,
-                dataset_subset,
-                cache_dir=paths_config.cache_dir,
-                trust_remote_code=True
-            )
-        else:
-            print(f"データセット {dataset_name} をロードします...")
-            dataset = load_dataset(
-                dataset_name,
-                cache_dir=paths_config.cache_dir,
-                trust_remote_code=True
-            )
-            
+        print(f"データセット {dataset_name}/{dataset_subset} をロードします...")
+        dataset = load_dataset(
+        dataset_name,
+        dataset_subset,
+        cache_dir=paths_config.cache_dir,
+        trust_remote_code=True
+        )
+
         print("データセットのロードが完了しました！")
         return dataset
     except Exception as e:
