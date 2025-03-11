@@ -338,9 +338,11 @@ def prepare_dataset_from_hf(dataset_name, tokenizer, hf_tokenizer, max_seq_len, 
         if args and hasattr(args, 'test_plain_output'):
             print(f"テスト用プレーンテキストデータを保存中: {args.test_plain_output}")
             
+            # Google Colab環境で互換性のあるtqdm設定を使用
             from tqdm import tqdm
             with open(args.test_plain_output, "w", encoding="utf-8") as f:
-                for item in tqdm(test_part, desc="テキスト保存中"):
+                # プログレスバーの更新頻度を下げる（Colab環境用）
+                for item in tqdm(test_part, desc="テキスト保存中", mininterval=0.5):
                     text = item["text"]
                     f.write(text + "\n\n")
             
@@ -488,6 +490,24 @@ def main():
         import google.colab
         is_colab = True
         print("Google Colab環境で実行中")
+        
+        # Colabでのプログレスバー設定の最適化
+        # 入力プロンプトを防ぐため、ウィジェットの特別設定
+        try:
+            from google.colab import output
+            output.enable_custom_widget_manager()
+            print("Colabウィジェットマネージャーを有効化しました")
+        except:
+            print("Colabウィジェットマネージャーの有効化に失敗しました")
+        
+        # Colabでのtqdmの設定を最適化
+        # ウィジェットではなくテキストベースのプログレスバーを使用
+        import tqdm
+        # tqdm設定を変更してColab環境に最適化
+        # 1. 更新頻度を下げる
+        tqdm.tqdm.mininterval = 0.5  # 最小更新間隔を0.5秒に設定
+        # 2. デフォルトでリフレッシュレートを低く設定
+        tqdm.tqdm.default_mininterval = 0.5
     except ImportError:
         is_colab = False
         print("ローカル環境で実行中")
@@ -610,12 +630,24 @@ def main():
         print(f"      --epochs=3")
         return
     
+    # 語彙サイズを安全に取得
+    if hasattr(hf_tokenizer, 'vocab_size'):
+        vocab_size = hf_tokenizer.vocab_size
+    elif hasattr(hf_tokenizer, 'vocab') and isinstance(hf_tokenizer.vocab, dict):
+        vocab_size = len(hf_tokenizer.vocab)
+    else:
+        # 安全のためのデフォルト値
+        vocab_size = 32000
+        print(f"警告: トークナイザーから語彙サイズを取得できませんでした。デフォルト値 {vocab_size} を使用します。")
+    
+    print(f"使用する語彙サイズ: {vocab_size}")
+    
     # モデル設定
     print("\nモデルを初期化します...")
     model_config = ModelConfig(
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
-        vocab_size=hf_tokenizer.vocab_size,
+        vocab_size=vocab_size,
         max_seq_len=args.max_seq_len,
         dropout_prob=0.2,
         use_rope=True,

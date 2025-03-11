@@ -421,6 +421,8 @@ class Trainer:
             mask_token_id=mask_token_id, 
             vocab_size=vocab_size
         )
+        # diffuserをクラス属性として保存（データ確認時などに参照できるように）
+        self.diffuser = diffuser
         diffuser = self.accelerator.prepare(diffuser)
         
         # diffusion学習用のカスタムコレーターを使用
@@ -498,12 +500,12 @@ class Trainer:
                         sample_text = tokenizer.decode(sample_ids)
                         print(f"サンプルテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
                         
-                        # Diffusionモデルの場合、ノイズを追加した例も表示
-                        if self.diffusion is not None:
+                        # Diffusionモデルのノイズ追加テスト
+                        if hasattr(self, 'diffuser'):
                             print("\nDiffusionノイズ追加テスト:")
                             # 最大ノイズレベル（タイムステップ）で
-                            t = torch.tensor([self.diffusion.timesteps - 1], device=sample_batch['input_ids'].device)
-                            noisy_ids, _ = self.diffusion(sample_batch['input_ids'][:1], t)
+                            t = torch.tensor([self.diffuser.timesteps - 1], device=sample_batch['input_ids'].device)
+                            noisy_ids, _ = self.diffuser(sample_batch['input_ids'][:1], t)
                             
                             # ノイズが追加されたトークンを表示
                             noisy_ids_list = noisy_ids[0].cpu().tolist()
@@ -516,6 +518,8 @@ class Trainer:
                             # デコード結果
                             noisy_text = tokenizer.decode(noisy_ids_list)
                             print(f"ノイズ追加後テキスト: {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
+                        else:
+                            print("\nDiffusionノイズ追加テストは、学習開始後にサンプルとして実行されます")
                 else:
                     print("トークナイザー情報が取得できません")
             except Exception as e:

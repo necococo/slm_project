@@ -72,18 +72,46 @@ class ModelConfig:
         なければ初期化時に設定された値を使用
         """
         if self.tokenizer is not None:
-            # transformers AutoTokenizerのサポートを追加
-            if hasattr(self.tokenizer, 'vocab'):
-                return len(self.tokenizer.vocab)
-            elif hasattr(self.tokenizer, 'vocab_size'):
-                return self.tokenizer.vocab_size
-            elif hasattr(self.tokenizer, 'sp') and hasattr(self.tokenizer.sp, 'get_piece_size'):
-                return self.tokenizer.sp.get_piece_size()
-            else:
-                raise AttributeError("トークナイザーからvocab_sizeを取得できません")
+            try:
+                # まず最も確実な方法で取得を試みる
+                # 1. vocab_sizeプロパティ（最も一般的）
+                if hasattr(self.tokenizer, 'vocab_size'):
+                    return self.tokenizer.vocab_size
+                
+                # 2. vocabディクショナリ
+                elif hasattr(self.tokenizer, 'vocab') and isinstance(self.tokenizer.vocab, dict):
+                    return len(self.tokenizer.vocab)
+                
+                # 3. SPのget_piece_sizeメソッド
+                elif hasattr(self.tokenizer, 'sp') and hasattr(self.tokenizer.sp, 'get_piece_size'):
+                    try:
+                        return self.tokenizer.sp.get_piece_size()
+                    except Exception as e:
+                        print(f"警告: get_piece_sizeの呼び出しに失敗しました: {e}")
+                
+                # 4. _tokenizerの確認 (SPEmulatorラッパー用)
+                elif hasattr(self.tokenizer, '_tokenizer'):
+                    if hasattr(self.tokenizer._tokenizer, 'vocab_size'):
+                        return self.tokenizer._tokenizer.vocab_size
+                    elif hasattr(self.tokenizer._tokenizer, 'vocab'):
+                        return len(self.tokenizer._tokenizer.vocab)
+                
+                # 5. コード内にハードコードされた値を使用（最後の手段）
+                print("警告: トークナイザーから語彙サイズを取得できません。デフォルト値を使用します。")
+                return 32000  # 一般的なT5モデルの語彙サイズ
+                
+            except Exception as e:
+                print(f"警告: トークナイザーから語彙サイズの取得に失敗しました: {e}")
+                if self._vocab_size is not None:
+                    print(f"初期化時に指定された語彙サイズ {self._vocab_size} を使用します")
+                    return self._vocab_size
+                else:
+                    print("デフォルト値 32000 を使用します")
+                    return 32000  # 安全のためのデフォルト値
         
         if self._vocab_size is None:
-            raise ValueError("vocab_sizeが設定されておらず、トークナイザーも設定されていません")
+            print("警告: vocab_sizeが設定されておらず、トークナイザーも設定されていません。デフォルト値 32000 を使用します")
+            return 32000  # 安全のためのデフォルト値
         
         return self._vocab_size
     

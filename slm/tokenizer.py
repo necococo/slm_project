@@ -137,12 +137,23 @@ class JapaneseTokenizer:
                 return self.tokenizer.decode(ids, skip_special_tokens=skip_special_tokens)
                 
             def piece_to_id(self, piece):
-                if piece in self.tokenizer.vocab:
-                    return self.tokenizer.convert_tokens_to_ids(piece)
-                return -1
+                # vocabプロパティがない場合（T5Tokenizerなど）は、convert_tokens_to_idsを使用
+                try:
+                    token_id = self.tokenizer.convert_tokens_to_ids(piece)
+                    # -1やNoneなど無効な値の場合は-1を返す
+                    return token_id if token_id not in [None, -100] else -1
+                except:
+                    return -1
                 
             def get_piece_size(self):
-                return len(self.tokenizer.vocab)
+                # vocab属性を持っているか確認
+                if hasattr(self.tokenizer, 'vocab'):
+                    return len(self.tokenizer.vocab)
+                # vocab_sizeプロパティがある場合（T5Tokenizerなど）
+                elif hasattr(self.tokenizer, 'vocab_size'):
+                    return self.tokenizer.vocab_size
+                # どちらも無い場合はデフォルト値
+                return 32000
                 
         instance.sp = SPEmulator(tokenizer)
         # 特殊トークン
