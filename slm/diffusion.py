@@ -69,11 +69,21 @@ class SimpleTextDiffusion(nn.Module):
         batch_size, seq_len = tokens.shape
         device = tokens.device
         
-        # t時点でのノイズ確率
-        noise_ratio = self.betas[t]
+        # t時点でのノイズ確率 - 0.01の最小値を追加して、t=0でも最低限のノイズが入るように
+        noise_ratio = max(0.01, self.betas[t])
+        
+        # 低ノイズレベルのログ (t < 2 のとき)
+        if t < 2:
+            print(f"低ノイズt={t}のノイズ比率: {noise_ratio:.4f}")
         
         # マスク確率（ステップに応じて徐々に増加）
         mask = torch.bernoulli(torch.full((batch_size, seq_len), noise_ratio, device=device))
+        
+        # マスクの総数を確認 (デバッグ用)
+        mask_count = mask.sum().item()
+        if t < 2:
+            mask_percent = (mask_count / (batch_size * seq_len)) * 100
+            print(f"t={t}でのマスク数: {mask_count}/{batch_size * seq_len} ({mask_percent:.2f}%)")
         
         # マスクを適用
         noisy_tokens = tokens.clone()

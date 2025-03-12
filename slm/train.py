@@ -519,8 +519,20 @@ class Trainer:
                             # デコード結果
                             noisy_text = tokenizer.decode(noisy_ids_list)
                             print(f"ノイズ追加後テキスト: {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
+                            
+                            # 明示的にマスクがあるか確認
+                            if mask_count == 0:
+                                print("警告: ノイズ追加後もマスクトークンが見つかりません！")
+                                # 緊急対策としてノイズ関数を直接テスト (t=15)
+                                print("-- 緊急ノイズチェック t=15 --")
+                                high_t = 15  # 高いt値でテスト
+                                manual_noisy = self.diffuser.add_noise(batch['input_ids'][:1], high_t)
+                                manual_mask_count = (manual_noisy == tokenizer.mask_token_id).sum().item()
+                                print(f"手動ノイズ適用(t={high_t})後のマスク数: {manual_mask_count}")
                         else:
                             print("\nDiffusionノイズ追加テストは、学習開始後にサンプルとして実行されます")
+                            
+                print("ノイズ関数のテスト完了。学習を開始します。")
                 else:
                     print("トークナイザー情報が取得できません")
             except Exception as e:
@@ -539,10 +551,15 @@ class Trainer:
             
             self.model.train()
             for batch_idx, batch in enumerate(progress_bar):
-                # タイムステップをランダムに選択 - 反転して低ノイズから始める
-                # t=0が低ノイズ、t=timesteps-1が高ノイズになるように
-                t_random = torch.randint(0, diffuser.timesteps, (1,)).item()
-                t = diffuser.timesteps - 1 - t_random  # タイムステップを反転
+                # タイムステップをランダムに選択
+                # 注意: t=0でもノイズが入るように修正しています
+                t = torch.randint(0, diffuser.timesteps, (1,)).item()
+                
+                # 最初の100バッチは低ノイズ(t=0〜5)から始めて学習を安定させる
+                if total_steps < 100:
+                    t = min(5, t)  # 最初の100バッチは低ノイズから始める
+                    if is_main_process and total_steps % 10 == 0:
+                        print(f"[初期学習フェーズ] バッチ {total_steps}, ノイズレベル t={t}")
                 
                 # Acceleratorを使用した学習ステップ
                 with self.accelerator.accumulate(self.model):
@@ -614,8 +631,8 @@ class Trainer:
                     print(f"元のテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
                     
                     # ノイズ追加 - 低ノイズから始める
-                    # t=0をサンプルテストに使用 (最小ノイズ量)
-                    t_min = torch.tensor([0], device=batch["input_ids"].device)
+                    # t値を1に変更（0ではなく）- 最小でも少しノイズを入れる
+                    t_min = torch.tensor([1], device=batch["input_ids"].device)
                     noisy_ids, _ = diffuser(batch["input_ids"][:1], t_min)
                     noisy_text = tokenizer.decode(noisy_ids[0].cpu().tolist())
                     print(f"ノイズ後 (低ノイズ t=0): {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
