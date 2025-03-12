@@ -15,8 +15,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="SLMプロジェクトのテスト実行")
     
     parser.add_argument("--test", type=str, default="all",
-                        choices=["data", "diffusion", "all"],
-                        help="実行するテスト (data: データ処理, diffusion: 拡散モデル, all: すべて)")
+                        choices=["data", "diffusion", "tokenizer", "all"],
+                        help="実行するテスト (data: データ処理, diffusion: 拡散モデル, tokenizer: トークナイザー, all: すべて)")
     parser.add_argument("--tokenizer", type=str, default="megagonlabs/t5-base-japanese-web",
                         help="使用するトークナイザー")
     parser.add_argument("--data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
@@ -59,6 +59,17 @@ def run_diffusion_test(args):
     ]
     subprocess.run(cmd)
 
+def run_tokenizer_test(args):
+    """トークナイザーのテストを実行"""
+    print("=== トークナイザーのテスト実行 ===")
+    
+    cmd = [
+        sys.executable,
+        os.path.join(os.path.dirname(__file__), "test_tokenizer_special_tokens.py"),
+        f"--tokenizer_name={args.tokenizer}"
+    ]
+    subprocess.run(cmd)
+
 def main():
     args = parse_args()
     
@@ -68,6 +79,10 @@ def main():
     
     if args.test in ["diffusion", "all"]:
         run_diffusion_test(args)
+        print("\n")
+        
+    if args.test in ["tokenizer", "all"]:
+        run_tokenizer_test(args)
 
 if __name__ == "__main__":
     main()
