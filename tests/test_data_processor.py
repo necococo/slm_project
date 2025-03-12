@@ -20,15 +20,18 @@ def parse_args():
                         help="最大シーケンス長")
     parser.add_argument("--mask_token", type=str, default="<mask>",
                         help="マスクトークン")
-    # parser.add_argument("--test_text", type=str, 
-    #                     default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
-    #                             "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
-    #                             "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
-    #                     help="テスト用テキスト")
     parser.add_argument("--mask_ratio", type=float, default=0.2,
                         help="マスク割合")
-    parser.add_argument("--dataset_path", type=str, default="/content/drive/MyDrive/slm/data/wiki40b_ja/train",
-                        help="データセットのパス（指定するとデータセットのテストも行う）")
+    parser.add_argument("--dataset_path", type=str, default=None,
+                        help="単一データセットのパス (非推奨)")
+    parser.add_argument("--data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki",
+                        help="データディレクトリ (train/valid/testを含む)")
+    parser.add_argument("--sample_all_splits", action="store_true",
+                        help="train/valid/testすべてからサンプリングする")
+    parser.add_argument("--samples_per_split", type=int, default=1,
+                        help="各分割から抽出するサンプル数")
+    parser.add_argument("--test_text", type=str, default=None,
+                        help="テスト用テキスト（指定時はデータセットより優先）")
     
     return parser.parse_args()
 
