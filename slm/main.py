@@ -196,7 +196,7 @@ def parse_args():
                         help="使用するトークナイザー名")
     parser.add_argument("--tokenizer_path", type=str, default=None,
                         help="保存済みトークナイザーのパス（指定するとHugging Faceからのダウンロードをスキップ）")
-    parser.add_argument("--use_local_dataset", action="store_true",
+    parser.add_argument("--use_local_dataset", action="store_true", default=True,
                         help="ローカルにダウンロード済みのデータセットを使用する")
     parser.add_argument("--use_fast_storage", action="store_true", default=True,
                         help="データをランタイム直下にコピーして高速アクセス（デフォルトはTrue）")
@@ -229,33 +229,40 @@ def parse_args():
     
     args = parser.parse_args()
     
-    # 自動的にローカルデータを使用するように設定
     # 既存の前処理済みデータが存在すればそれを使う
-    args.use_local_dataset = True
+    # default=Trueに設定済み: args.use_local_dataset = True
     
     # Google Driveのデータディレクトリパスを設定
     args.drive_train_data_dir = os.path.join(args.local_data_dir, "train")
     args.drive_valid_data_dir = os.path.join(args.local_data_dir, "valid")
     args.drive_test_data_dir = os.path.join(args.local_data_dir, "test")
+    args.drive_tokenizers_dir = os.path.join(args.local_data_dir, "tokenizers")
     
     # 高速ストレージのデータディレクトリパスを設定
     args.train_data_dir = os.path.join(args.fast_data_dir, "train")
     args.valid_data_dir = os.path.join(args.fast_data_dir, "valid")
     args.test_data_dir = os.path.join(args.fast_data_dir, "test")
+    args.tokenizers_dir = os.path.join(args.fast_data_dir, "tokenizers")
     
     # プレーンテキスト用のテストデータ出力先
     args.test_plain_output = os.path.join(args.fast_data_dir, "test_plain.txt")
+    
+    # 高速ストレージをデフォルトで有効化 (明示的にオフにされない限り)
+    if not hasattr(args, 'use_fast_storage') or args.use_fast_storage is None:
+        args.use_fast_storage = True
     
     # 高速ストレージのベースディレクトリを作成
     try:
         print(f"高速データディレクトリを作成: {args.fast_data_dir}")
         os.makedirs(args.fast_data_dir, exist_ok=True)
+        os.makedirs(args.tokenizers_dir, exist_ok=True)
     except Exception as e:
         print(f"警告: 高速データディレクトリの作成に失敗しました: {e}")
         # 失敗した場合は元のパスを使用
         args.train_data_dir = args.drive_train_data_dir
         args.valid_data_dir = args.drive_valid_data_dir
         args.test_data_dir = args.drive_test_data_dir
+        args.tokenizers_dir = args.drive_tokenizers_dir
         args.use_fast_storage = False
     
     return args
@@ -558,46 +565,70 @@ def main():
     # トークナイザーのロード
     from slm.tokenizer import load_tokenizer
     
-    # トークナイザーの保存先を決定
-    tokenizer_save_dir = None
+    # トークナイザーの保存先は常に高速ストレージ内
+    tokenizer_save_dir = args.tokenizers_dir
     
-    # 最初の保存先は Google Drive のデータディレクトリ（新規ダウンロード時のみ）
-    if args.local_data_dir and os.path.exists(args.local_data_dir):
-        tokenizer_save_dir = args.local_data_dir
+    # 高速ストレージディレクトリが存在することを確認
+    os.makedirs(tokenizer_save_dir, exist_ok=True)
+
+    # トークナイザーの検索順序を決定
+    tokenizer_path = None
     
     # 既存の tokenizer_path パラメータがあればそれを優先
     if args.tokenizer_path and os.path.exists(os.path.dirname(args.tokenizer_path)):
         tokenizer_path = args.tokenizer_path
     else:
-        # 既定の tokenizer_path を設定
-        tokenizer_path = None
+        # 検索順序: 1. 高速ストレージ、2. ローカルパス、3. その他の既定のパス
+        search_paths = []
         
-        # 高速ストレージ優先で検索
-        if args.use_fast_storage:
-            # 高速ストレージのtokenizersパスを先に検索（データセットと一緒にコピーされるはず）
-            fast_paths = [
-                os.path.join(args.fast_data_dir, "tokenizers", "tokenizer.pkl"),
-                os.path.join(args.fast_data_dir, "tokenizers", "tokenizer_model.json")
-            ]
-            for path in fast_paths:
-                if os.path.exists(path):
-                    tokenizer_path = path
-                    print(f"高速ストレージで既存のトークナイザーを発見しました: {tokenizer_path}")
-                    break
+        # 1. 高速ストレージを常に最優先
+        search_paths.extend([
+            os.path.join(args.tokenizers_dir, "tokenizer.pkl"),
+            os.path.join(args.tokenizers_dir, "tokenizer_model.json")
+        ])
         
-        # 高速ストレージで見つからなければ、元のパスを検索
-        if tokenizer_path is None:
-            default_paths = [
-                os.path.join(args.local_data_dir, "tokenizers", "tokenizer.pkl"),
-                os.path.join(args.local_data_dir, "tokenizers", "tokenizer_model.json"),
-                os.path.join("/content/drive/MyDrive/slm/checkpoints/tokenizers", "tokenizer_model.json")
-            ]
+        # 2. ローカルディレクトリパス
+        search_paths.extend([
+            os.path.join(args.drive_tokenizers_dir, "tokenizer.pkl"),
+            os.path.join(args.drive_tokenizers_dir, "tokenizer_model.json"),
+            os.path.join("/content/drive/MyDrive/slm/checkpoints/tokenizers", "tokenizer_model.json")
+        ])
+        
+        # 検索実行
+        for path in search_paths:
+            if os.path.exists(path):
+                tokenizer_path = path
+                location = "高速ストレージ" if args.tokenizers_dir in path else "ローカルディレクトリ"
+                print(f"{location}で既存のトークナイザーを発見しました: {tokenizer_path}")
+                break
+    
+    # ローカルからトークナイザーをコピー (高速ストレージになければ)
+    if tokenizer_path and not tokenizer_path.startswith(args.tokenizers_dir):
+        try:
+            import shutil
+            # コピー元のディレクトリまたはファイル
+            source = os.path.dirname(tokenizer_path) if os.path.isfile(tokenizer_path) else tokenizer_path
             
-            for path in default_paths:
-                if os.path.exists(path):
-                    tokenizer_path = path
-                    print(f"既存のトークナイザーを発見しました: {tokenizer_path}")
-                    break
+            print(f"トークナイザーを高速ストレージにコピー中: {source} → {args.tokenizers_dir}")
+            
+            # ディレクトリ全体をコピー
+            if os.path.isdir(source):
+                shutil.copytree(source, args.tokenizers_dir, dirs_exist_ok=True)
+            # 単一ファイルのコピー
+            else:
+                target_file = os.path.join(args.tokenizers_dir, os.path.basename(tokenizer_path))
+                shutil.copy2(tokenizer_path, target_file)
+                
+            print(f"トークナイザーを高速ストレージにコピーしました")
+            
+            # 高速ストレージ内のパスを優先するよう更新
+            if tokenizer_path.endswith("tokenizer.pkl"):
+                tokenizer_path = os.path.join(args.tokenizers_dir, "tokenizer.pkl")
+            elif tokenizer_path.endswith("tokenizer_model.json"):
+                tokenizer_path = os.path.join(args.tokenizers_dir, "tokenizer_model.json")
+            
+        except Exception as e:
+            print(f"トークナイザーの高速ストレージへのコピーに失敗しました: {e}")
     
     # トークナイザーを読み込む
     print(f"トークナイザーを読み込み中...")
@@ -609,10 +640,35 @@ def main():
             save_dir=tokenizer_save_dir,
             use_fast=False
         )
+        
+        # 常に高速ストレージにPickle形式でも保存
+        try:
+            import pickle
+            pickle_path = os.path.join(args.tokenizers_dir, "tokenizer.pkl")
+            with open(pickle_path, 'wb') as f:
+                pickle.dump(tokenizer, f)
+            print(f"トークナイザーをPickle形式でも保存しました: {pickle_path}")
+        except Exception as e:
+            print(f"Pickle形式での保存に失敗しました: {e}")
+            
     except Exception as e:
         print(f"トークナイザーのロードに失敗しました: {e}")
         print(f"標準のHugging Faceトークナイザーを使用します")
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, use_fast=False)
+        
+        # 新しくダウンロードしたトークナイザーは高速ストレージに保存
+        try:
+            tokenizer.save_pretrained(args.tokenizers_dir)
+            print(f"ダウンロードしたトークナイザーを高速ストレージに保存しました: {args.tokenizers_dir}")
+            
+            # Pickleでも保存
+            import pickle
+            pickle_path = os.path.join(args.tokenizers_dir, "tokenizer.pkl")
+            with open(pickle_path, 'wb') as f:
+                pickle.dump(tokenizer, f)
+            print(f"トークナイザーをPickle形式でも保存しました: {pickle_path}")
+        except Exception as e:
+            print(f"トークナイザーの保存に失敗しました: {e}")
     
     mask_token_id = tokenizer.mask_token_id
     print(f"[MASK]トークンID: {mask_token_id}")
@@ -636,59 +692,90 @@ def main():
         print(f"  - 検証: {args.drive_valid_data_dir}")
         print(f"  - テスト: {args.drive_test_data_dir}")
     
-    # データが高速ストレージに存在するかチェック
-    if args.use_fast_storage:
-        fast_data_exists = os.path.exists(args.train_data_dir) and os.path.exists(args.valid_data_dir) and os.path.exists(args.test_data_dir)
-        
-        if not fast_data_exists:
-            # サブディレクトリを明示的に作成
-            try:
-                print("\n高速ストレージにデータをコピーします...")
-                
-                # 各ディレクトリを作成
-                os.makedirs(args.train_data_dir, exist_ok=True)
-                os.makedirs(args.valid_data_dir, exist_ok=True)
-                os.makedirs(args.test_data_dir, exist_ok=True)
-                
-                # Google Driveから高速ストレージにデータをコピー
-                import shutil
-                from datetime import datetime
-                
-                # コピー開始時間
-                start_time = datetime.now()
-                print(f"コピー開始: {start_time.strftime('%H:%M:%S')}")
-                
-                # 訓練データのコピー
-                if os.path.exists(args.drive_train_data_dir):
-                    print(f"訓練データをコピー中: {args.drive_train_data_dir} → {args.train_data_dir}")
-                    shutil.copytree(args.drive_train_data_dir, args.train_data_dir, dirs_exist_ok=True)
-                
-                # 検証データのコピー
+    # 常に高速ストレージを使用
+    # トレーニングデータが高速ストレージに存在するかチェック
+    fast_data_exists = os.path.exists(args.train_data_dir)
+    
+    if not fast_data_exists:
+        # サブディレクトリを明示的に作成
+        try:
+            print("\n高速ストレージにデータをコピーします...")
+            
+            # 各ディレクトリを作成
+            os.makedirs(args.train_data_dir, exist_ok=True)
+            os.makedirs(args.valid_data_dir, exist_ok=True)
+            os.makedirs(args.test_data_dir, exist_ok=True)
+            
+            # Google Driveから高速ストレージにデータをコピー
+            import shutil
+            from datetime import datetime
+            import time
+            
+            # コピー開始時間
+            start_time = datetime.now()
+            print(f"コピー開始: {start_time.strftime('%H:%M:%S')}")
+            
+            # 必要なディレクトリのみコピー（訓練データが最優先）
+            copied_dirs = []
+            
+            # 訓練データは必須
+            train_data_available = os.path.exists(args.drive_train_data_dir)
+            if not train_data_available:
+                print(f"エラー: 訓練データが見つかりません: {args.drive_train_data_dir}")
+                # 警告を表示するが、引き続き高速ストレージを使用
+                print(f"警告: 元データが見つからないため、高速ストレージにデータがない状態で続行します。")
+            else:
+                print(f"訓練データをコピー中: {args.drive_train_data_dir} → {args.train_data_dir}")
+                copy_start = time.time()
+                shutil.copytree(args.drive_train_data_dir, args.train_data_dir, dirs_exist_ok=True)
+                copy_end = time.time()
+                copied_dirs.append(f"train ({copy_end - copy_start:.1f}秒)")
+            
+                # 検証データのコピー（あれば）
                 if os.path.exists(args.drive_valid_data_dir):
                     print(f"検証データをコピー中: {args.drive_valid_data_dir} → {args.valid_data_dir}")
+                    copy_start = time.time()
                     shutil.copytree(args.drive_valid_data_dir, args.valid_data_dir, dirs_exist_ok=True)
+                    copy_end = time.time()
+                    copied_dirs.append(f"valid ({copy_end - copy_start:.1f}秒)")
+                else:
+                    print(f"検証データが見つかりません。スキップします: {args.drive_valid_data_dir}")
                 
-                # テストデータのコピー
+                # テストデータのコピー（あれば）
                 if os.path.exists(args.drive_test_data_dir):
                     print(f"テストデータをコピー中: {args.drive_test_data_dir} → {args.test_data_dir}")
+                    copy_start = time.time()
                     shutil.copytree(args.drive_test_data_dir, args.test_data_dir, dirs_exist_ok=True)
+                    copy_end = time.time()
+                    copied_dirs.append(f"test ({copy_end - copy_start:.1f}秒)")
+                else:
+                    print(f"テストデータが見つかりません。スキップします: {args.drive_test_data_dir}")
                 
+                # トークナイザーのコピー（あれば、既にトークナイザー処理でコピー済みでない場合）
+                if os.path.exists(args.drive_tokenizers_dir) and not os.path.exists(os.path.join(args.tokenizers_dir, "tokenizer.pkl")):
+                    print(f"トークナイザーをコピー中: {args.drive_tokenizers_dir} → {args.tokenizers_dir}")
+                    copy_start = time.time()
+                    os.makedirs(args.tokenizers_dir, exist_ok=True)
+                    shutil.copytree(args.drive_tokenizers_dir, args.tokenizers_dir, dirs_exist_ok=True)
+                    copy_end = time.time()
+                    copied_dirs.append(f"tokenizers ({copy_end - copy_start:.1f}秒)")
+            
                 # コピー終了時間
                 end_time = datetime.now()
                 elapsed = end_time - start_time
                 print(f"コピー完了: {end_time.strftime('%H:%M:%S')} (所要時間: {elapsed.total_seconds():.1f}秒)")
-            except Exception as e:
-                print(f"エラー: 高速ストレージへのデータコピーに失敗しました: {e}")
-                print("Google Driveから直接データを読み込みます...")
-                args.use_fast_storage = False
-                args.train_data_dir = args.drive_train_data_dir
-                args.valid_data_dir = args.drive_valid_data_dir
-                args.test_data_dir = args.drive_test_data_dir
+                print(f"コピーしたディレクトリ: {', '.join(copied_dirs)}")
+                print(f"高速アクセスのためのデータを /content/fast_dataへのコピーが完了しました")
+            
+        except Exception as e:
+            print(f"エラー: 高速ストレージへのデータコピーに失敗しました: {e}")
+            print(f"警告: コピーに失敗しましたが、引き続き高速ストレージを使用します。")
+            print(f"必要に応じてHugging Faceからデータセットをダウンロードし、高速ストレージに保存します。")
     else:
-        # 高速ストレージを使わない場合はGoogle Driveのパスを使用
-        args.train_data_dir = args.drive_train_data_dir
-        args.valid_data_dir = args.drive_valid_data_dir
-        args.test_data_dir = args.drive_test_data_dir
+        print(f"高速ストレージにデータが既に存在します: {args.train_data_dir}")
+        
+    # 常に高速ストレージのパスを使用
+    print(f"高速データアクセスを使用: {args.fast_data_dir}")
     
     # デバッグモードの場合、詳細情報を表示
     if hasattr(args, 'debug') and args.debug:
@@ -705,15 +792,7 @@ def main():
         try:
             # 最も柔軟に対応できるよう、各ディレクトリの存在をチェック
             
-            # 1. 旧フォーマット（単一ディレクトリ）
-            if os.path.exists(os.path.join(args.local_data_dir, "dataset_info.json")):
-                print("単一ディレクトリ形式のデータセットを読み込み中...")
-                full_dataset = load_from_disk(args.local_data_dir)
-                dataset = full_dataset
-                print("データセットを正常にロードしました")
-                
-            # 2. 新フォーマット（完全なスプリット別ディレクトリ）
-            elif os.path.exists(args.train_data_dir) and os.path.exists(args.valid_data_dir) and os.path.exists(args.test_data_dir):
+            if os.path.exists(args.train_data_dir) and os.path.exists(args.valid_data_dir) and os.path.exists(args.test_data_dir):
                 print("スプリット別ディレクトリ形式のデータセットを読み込み中...")
                 dataset = {}
                 

@@ -77,21 +77,32 @@ def load_tokenizer(model_name: str = "megagonlabs/t5-base-japanese-web", tokeniz
             except Exception as e:
                 print(f"データディレクトリ内のPickleトークナイザーの読み込みに失敗しました: {e}")
     
-    # 3. 既定場所の確認 (/content/drive/MyDrive/slm/checkpoints/tokenizers/)
+    # 3. 既定場所の確認 (常に高速ストレージが最優先)
     if tokenizer is None:
         default_tokenizer_paths = [
-            # "/content/drive/MyDrive/slm/checkpoints/tokenizers/tokenizer_model.json",
-            "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/tokenizers/tokenizer_model.json",
+            # 高速ストレージを最優先
+            "/content/fast_data/tokenizers/tokenizer.pkl",
             "/content/fast_data/tokenizers/tokenizer_model.json",
-            # "/content/tokenizers/tokenizer_model.json"
+            # ドライブの既定パス
+            "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/tokenizers/tokenizer.pkl",
+            "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/tokenizers/tokenizer_model.json",
+            "/content/drive/MyDrive/slm/checkpoints/tokenizers/tokenizer_model.json",
         ]
         
         for path in default_tokenizer_paths:
             if os.path.exists(path):
                 try:
-                    tokenizer_dir = os.path.dirname(path)
-                    tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, use_fast=use_fast)
-                    tokenizer_loaded_from = f"既定のパス: {path}"
+                    # Pickleファイルの場合
+                    if path.endswith('.pkl'):
+                        import pickle
+                        with open(path, 'rb') as f:
+                            tokenizer = pickle.load(f)
+                        tokenizer_loaded_from = f"既定のPickleパス: {path}"
+                    else:
+                        # JSON/ディレクトリの場合
+                        tokenizer_dir = os.path.dirname(path)
+                        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, use_fast=use_fast)
+                        tokenizer_loaded_from = f"既定のパス: {path}"
                     break
                 except Exception as e:
                     print(f"既定のパス {path} からのトークナイザー読み込みに失敗しました: {e}")
