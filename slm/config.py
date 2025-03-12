@@ -169,8 +169,8 @@ class PathsConfig:
     def __init__(
         self,
         base_dir: str = os.getcwd(),  # カレントディレクトリを基準
-        dataset_name: str = "fujiki/wiki40b_ja",  # NINJAL Web Japanese Corpus
-        dataset_subset: Optional[str] = None,
+        dataset_name: str = "fujiki",  # NINJAL Web Japanese Corpus
+        dataset_subset: Optional[str] = "wiki40b_ja",
         tokenizer_name: str = "megagonlabs/t5-base-japanese-web",  # 日本語Webテキスト向けに最適化されたT5ベースのトークナイザー
         output_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
