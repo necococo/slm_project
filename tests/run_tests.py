@@ -33,7 +33,7 @@ def run_data_processor_test(args):
         os.path.join(os.path.dirname(__file__), "test_data_processor.py"),
         f"--tokenizer_name={args.tokenizer}",
         f"--data_dir={args.data_dir}",
-        "--sample_all_splits=True"
+        "--sample_all_splits"
     ]
     subprocess.run(cmd)
 
@@ -55,7 +55,7 @@ def run_diffusion_test(args):
         "--timesteps=5",
         "--mask_prob_min=0.0",
         "--mask_prob_max=0.8",
-        "--sample_all_splits=True"
+        "--sample_all_splits"
     ]
     subprocess.run(cmd)
 
