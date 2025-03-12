@@ -915,9 +915,13 @@ def main():
     model_config.set_tokenizer(tokenizer)
     
     # トレーニング設定
+    # 大きなバッチサイズを使用してトレーニングを高速化
+    batch_size = 512  # GPUメモリ使用量が4.1/40GBなので余裕がある
+    print(f"バッチサイズを大きく設定: {args.batch_size} → {batch_size} (GPUメモリに余裕があるため)")
+    
     training_config = TrainingConfig(
         learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
+        batch_size=batch_size,  # バッチサイズを大きく設定
         mlm_epochs=0,  # MLM学習はスキップ
         diffusion_epochs=args.epochs,  # Diffusion学習のみ実行
         weight_decay=0.01,

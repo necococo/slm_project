@@ -448,9 +448,9 @@ class Trainer:
             print(f"コレーターの初期化中にエラーが発生しました: {e}")
             collator = None
         
-        # 固定バッチサイズ8を使用
-        batch_size = 8
-        print(f"Diffusion学習のバッチサイズを{batch_size}に固定")
+        # 設定からバッチサイズを取得
+        batch_size = self.training_config.batch_size
+        print(f"Diffusion学習のバッチサイズ: {batch_size}")
         
         # DataLoaderを作成し、Acceleratorで準備
         dataloader = DataLoader(
@@ -550,6 +550,11 @@ class Trainer:
                     
                     # プログレスバーに現在の損失を表示
                     progress_bar.set_postfix(loss=f"{step_loss:.4f}")
+                    
+                    # 定期的にチェックポイントを保存（1000バッチごと）
+                    if is_main_process and (total_steps + 1) % 1000 == 0:
+                        self.save_checkpoint(f"diffusion_step_{total_steps+1}")
+                        print(f"ステップ {total_steps+1} でチェックポイントを保存しました")
 
                 total_steps += 1
 
