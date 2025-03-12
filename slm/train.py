@@ -419,7 +419,8 @@ class Trainer:
         diffuser = SimpleTextDiffusion(
             timesteps=20, 
             mask_token_id=mask_token_id, 
-            vocab_size=vocab_size
+            vocab_size=vocab_size,
+            beta_schedule="quadratic"  # より安定した学習のため二次関数的なスケジュールを使用
         )
         # diffuserをクラス属性として保存（データ確認時などに参照できるように）
         self.diffuser = diffuser
@@ -551,10 +552,25 @@ class Trainer:
                     # プログレスバーに現在の損失を表示
                     progress_bar.set_postfix(loss=f"{step_loss:.4f}")
                     
-                    # 定期的にチェックポイントを保存（1000バッチごと）
-                    if is_main_process and (total_steps + 1) % 1000 == 0:
-                        self.save_checkpoint(f"diffusion_step_{total_steps+1}")
-                        print(f"ステップ {total_steps+1} でチェックポイントを保存しました")
+                    # 定期的なメモリ使用状況のログと100バッチごとのチェックポイント保存
+                    if is_main_process:
+                        # メモリ使用状況をログ（20バッチごと）
+                        if (total_steps + 1) % 20 == 0:
+                            gpu_info = ""
+                            try:
+                                if torch.cuda.is_available():
+                                    allocated = torch.cuda.memory_allocated() / 1024**3
+                                    max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+                                    reserved = torch.cuda.memory_reserved() / 1024**3
+                                    gpu_info = f", GPU: {allocated:.2f}GB (最大: {max_allocated:.2f}GB, 予約: {reserved:.2f}GB)"
+                            except:
+                                pass
+                            print(f"ステップ {total_steps+1}, 損失: {step_loss:.4f}{gpu_info}")
+                        
+                        # より頻繁にチェックポイントを保存（100バッチごと）
+                        if (total_steps + 1) % 100 == 0:
+                            self.save_checkpoint(f"diffusion_step_{total_steps+1}")
+                            print(f"ステップ {total_steps+1} でチェックポイントを保存しました")
 
                 total_steps += 1
 

@@ -30,10 +30,10 @@ class SimpleTextDiffusion(nn.Module):
         self.mask_token_id = mask_token_id
         self.vocab_size = vocab_size
         
-        # ノイズスケジュール
+        # ノイズスケジュール - より緩やかな開始
         if beta_schedule == "linear":
-            # 線形スケジュール
-            betas = torch.linspace(0.1, 0.9, timesteps)
+            # 線形スケジュール - より小さな開始値でより緩やかに開始
+            betas = torch.linspace(0.05, 0.8, timesteps)  # 小さな値から始めて、最大値も抑える
         elif beta_schedule == "cosine":
             # コサインスケジュール
             s = 0.008
@@ -42,9 +42,16 @@ class SimpleTextDiffusion(nn.Module):
             alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.tensor(torch.pi / 2)) ** 2
             alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
             betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-            betas = torch.clip(betas, 0.0, 0.999)
+            betas = torch.clip(betas, 0.0, 0.8)  # 最大値を0.8に制限
+        elif beta_schedule == "quadratic":
+            # 二次関数的スケジュール - より滑らかな増加
+            betas = torch.linspace(0, 1, timesteps) ** 2 * 0.8
         else:
             raise ValueError(f"Unknown beta_schedule: {beta_schedule}")
+        
+        # 安定性のため、ノイズスケジュールについてログ出力
+        print(f"拡散ノイズスケジュール: {beta_schedule}, ステップ数: {timesteps}")
+        print(f"ノイズレベル: 最小={betas[0].item():.4f}, 最大={betas[-1].item():.4f}")
         
         self.register_buffer("betas", betas)
     

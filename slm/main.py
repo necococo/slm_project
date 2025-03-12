@@ -915,9 +915,9 @@ def main():
     model_config.set_tokenizer(tokenizer)
     
     # トレーニング設定
-    # 大きなバッチサイズを使用してトレーニングを高速化
-    batch_size = 512  # GPUメモリ使用量が4.1/40GBなので余裕がある
-    print(f"バッチサイズを大きく設定: {args.batch_size} → {batch_size} (GPUメモリに余裕があるため)")
+    # より安全なバッチサイズで開始し、後で徐々に増やす
+    batch_size = 128  # 安全な値から始める
+    print(f"バッチサイズを調整: {args.batch_size} → {batch_size} (安定性のため)")
     
     training_config = TrainingConfig(
         learning_rate=args.learning_rate,
@@ -929,7 +929,7 @@ def main():
         use_amp=True,
         use_gradient_checkpointing=True,
         clip_grad_norm=True,
-        clip_value=1.0
+        clip_value=0.5  # 安定性のため勾配クリッピング値を小さくする
     )
     
     # パス設定
