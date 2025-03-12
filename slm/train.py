@@ -274,9 +274,10 @@ class Trainer:
         else:
             return loss.item()  # ローカルな損失値のみを返す
 
-    def train_diffusion(self, num_epochs: Optional[int] = None) -> None:
+    def train_diffusion(self, num_epochs: Optional[int] = None, start_epoch: int = 0) -> None:
         """
         拡散モデル方式でFine-tuning - TPU v5e-1 + Accelerateを使用
+        start_epoch: 開始エポック番号（チェックポイントから再開する場合に使用）
         """
         epochs = num_epochs or self.training_config.diffusion_epochs
         if epochs == 0:
@@ -413,14 +414,18 @@ class Trainer:
             except Exception as e:
                 print(f"データ確認中にエラーが発生しました: {e}")
         
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, start_epoch + epochs):
             epoch_loss = 0.0
             epoch_start_time = time.time()
+            
+            # エポック表示を修正（1ベースではなくstart_epochから始まる）
+            current_epoch = epoch + 1
+            final_epoch = start_epoch + epochs
             
             # tqdmはAcceleratorと組み合わせて使用
             progress_bar = tqdm(
                 dataloader, 
-                desc=f"Diffusion Epoch {epoch+1}/{epochs}", 
+                desc=f"Diffusion Epoch {current_epoch}/{final_epoch}", 
                 disable=not is_main_process
             )
             
@@ -515,16 +520,16 @@ class Trainer:
             if is_main_process:
                 avg_loss = epoch_loss / len(dataloader)
                 epoch_time = time.time() - epoch_start_time
-                print(f"Diffusion Epoch {epoch+1}/{epochs} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
-                self.writer.add_scalar("Diffusion/Epoch Loss", avg_loss, epoch)
-                self.writer.add_scalar("Diffusion/Epoch Time (s)", epoch_time, epoch)
+                print(f"Diffusion Epoch {current_epoch}/{final_epoch} done | Avg Loss: {avg_loss:.4f} | Time: {epoch_time:.2f}s")
+                self.writer.add_scalar("Diffusion/Epoch Loss", avg_loss, current_epoch)
+                self.writer.add_scalar("Diffusion/Epoch Time (s)", epoch_time, current_epoch)
             
             # スケジューラを進める
             self.scheduler.step()
             
             # チェックポイント保存（メインプロセスのみ）
-            if is_main_process and ((epoch + 1) % 5 == 0 or epoch == epochs - 1):
-                self.save_checkpoint(f"diffusion_epoch_{epoch+1}")
+            if is_main_process and ((current_epoch) % 5 == 0 or current_epoch == final_epoch):
+                self.save_checkpoint(f"diffusion_epoch_{current_epoch}")
         
         # 学習完了（メインプロセスのみ）
         if is_main_process:
@@ -745,9 +750,10 @@ class Trainer:
         # 全プロセスが同期するのを待つ
         self.accelerator.wait_for_everyone()
 
-    def load_checkpoint(self, path: str) -> None:
+    def load_checkpoint(self, path: str) -> int:
         """
         Acceleratorを使用したチェックポイント読み込み（TPU v5e-1対応）
+        チェックポイントの次のエポック番号を返す
         """
         # 全プロセスがロードする必要がある
         checkpoint = torch.load(path, map_location=self.accelerator.device)
@@ -762,12 +768,24 @@ class Trainer:
         if "optimizer_state_dict" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
+        # チェックポイントのファイル名からエポック番号を抽出
+        import re
+        start_epoch = 0
+        epoch_match = re.search(r'diffusion_epoch_(\d+)', path)
+        if epoch_match:
+            start_epoch = int(epoch_match.group(1))
+            if self.accelerator.is_main_process:
+                print(f"チェックポイントのエポック番号: {start_epoch}、次のエポック: {start_epoch + 1}")
+        
         # メインプロセスのみが出力
         if self.accelerator.is_main_process:
             print(f"Model loaded from {path}")
         
         # 全プロセスが同期するのを待つ
         self.accelerator.wait_for_everyone()
+        
+        # 抽出したエポック番号を返す
+        return start_epoch
 
     def close(self) -> None:
         """

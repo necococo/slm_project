@@ -43,3 +43,6 @@ BOS: \<s> # 文の始まりトークンを一応入れた
       --output_dir="/content/drive/MyDrive/slm/outputs"
 
 
+python slm/main.py --output_dir=/content/drive/MyDrive/slm_outputs/slm_1024h_3l --use_local_dataset
+  --local_data_dir=/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja --tokenizer_name=megagonlabs/t5-base-japanese-web
+  --checkpoint=/content/drive/MyDrive/slm_outputs/slm_1024h_3l/checkpoints/diffusion_epoch_3.pt --epochs=100
