@@ -247,9 +247,9 @@ def main():
     
     # データセットの読み込み
     print("データセットを読み込み中...")
-    dataset_path = os.path.join(paths_config.data_dir, "valid_dataset")
+    dataset_path = os.path.join(paths_config.data_dir, paths_config.dataset_name, paths_config.dataset_subset, "valid")
     if not os.path.exists(dataset_path):
-        dataset_path = os.path.join(paths_config.data_dir, "train_dataset")
+        dataset_path = os.path.join(paths_config.data_dir, paths_config.dataset_name, paths_config.dataset_subset, "train")
     
     try:
         dataset = load_from_disk(dataset_path)

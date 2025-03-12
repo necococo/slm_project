@@ -19,7 +19,7 @@ def parse_args():
                         help="実行するテスト (data: データ処理, diffusion: 拡散モデル, all: すべて)")
     parser.add_argument("--tokenizer", type=str, default="megagonlabs/t5-base-japanese-web",
                         help="使用するトークナイザー")
-    parser.add_argument("--data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki",
+    parser.add_argument("--data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
                         help="前処理済みデータセットのディレクトリ")
     
     return parser.parse_args()

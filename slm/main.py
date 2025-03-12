@@ -186,7 +186,7 @@ def parse_args():
     # データパス関連
     parser.add_argument("--dataset_name", type=str, default="fujiki/wiki40b_ja",
                         help="Hugging Faceからロードするデータセット名")
-    parser.add_argument("--local_data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki",
+    parser.add_argument("--local_data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
                         help="ローカルにダウンロード済みのデータセットディレクトリ")
     parser.add_argument("--output_dir", type=str, default="./outputs",
                         help="モデル出力ディレクトリ")
