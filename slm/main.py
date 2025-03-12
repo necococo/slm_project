@@ -188,12 +188,18 @@ def parse_args():
                         help="Hugging Faceからロードするデータセット名")
     parser.add_argument("--local_data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
                         help="ローカルにダウンロード済みのデータセットディレクトリ")
+    parser.add_argument("--fast_data_dir", type=str, default="/content/fast_data",
+                        help="高速アクセス用の一時データディレクトリ（デフォルトはランタイム直下）")
     parser.add_argument("--output_dir", type=str, default="./outputs",
                         help="モデル出力ディレクトリ")
     parser.add_argument("--tokenizer_name", type=str, default="megagonlabs/t5-base-japanese-web",
                         help="使用するトークナイザー名")
+    parser.add_argument("--tokenizer_path", type=str, default=None,
+                        help="保存済みトークナイザーのパス（指定するとHugging Faceからのダウンロードをスキップ）")
     parser.add_argument("--use_local_dataset", action="store_true",
                         help="ローカルにダウンロード済みのデータセットを使用する")
+    parser.add_argument("--use_fast_storage", action="store_true", default=True,
+                        help="データをランタイム直下にコピーして高速アクセス（デフォルトはTrue）")
     
     # モデル設定
     parser.add_argument("--hidden_size", type=int, default=1024,
@@ -204,7 +210,7 @@ def parse_args():
                         help="最大シーケンス長")
     
     # 学習設定
-    parser.add_argument("--batch_size", type=int, default=8,
+    parser.add_argument("--batch_size", type=int, default=64,
                         help="バッチサイズ")
     parser.add_argument("--epochs", type=int, default=3,
                         help="Diffusion学習のエポック数")
@@ -227,20 +233,30 @@ def parse_args():
     # 既存の前処理済みデータが存在すればそれを使う
     args.use_local_dataset = True
     
-    # データセットのスプリット別サブディレクトリのパスを設定
-    args.train_data_dir = os.path.join(args.local_data_dir, "train")
-    args.valid_data_dir = os.path.join(args.local_data_dir, "valid")
-    args.test_data_dir = os.path.join(args.local_data_dir, "test")
+    # Google Driveのデータディレクトリパスを設定
+    args.drive_train_data_dir = os.path.join(args.local_data_dir, "train")
+    args.drive_valid_data_dir = os.path.join(args.local_data_dir, "valid")
+    args.drive_test_data_dir = os.path.join(args.local_data_dir, "test")
     
-    # プレーンテキスト用のテストデータ出力先も設定
-    args.test_plain_output = os.path.join(args.local_data_dir, "test_plain.txt")
+    # 高速ストレージのデータディレクトリパスを設定
+    args.train_data_dir = os.path.join(args.fast_data_dir, "train")
+    args.valid_data_dir = os.path.join(args.fast_data_dir, "valid")
+    args.test_data_dir = os.path.join(args.fast_data_dir, "test")
     
-    # ベースディレクトリを作成 (パスが存在しない場合)
+    # プレーンテキスト用のテストデータ出力先
+    args.test_plain_output = os.path.join(args.fast_data_dir, "test_plain.txt")
+    
+    # 高速ストレージのベースディレクトリを作成
     try:
-        print(f"データディレクトリを作成: {args.local_data_dir}")
-        os.makedirs(args.local_data_dir, exist_ok=True)
+        print(f"高速データディレクトリを作成: {args.fast_data_dir}")
+        os.makedirs(args.fast_data_dir, exist_ok=True)
     except Exception as e:
-        print(f"警告: ベースディレクトリの作成に失敗しました: {e}")
+        print(f"警告: 高速データディレクトリの作成に失敗しました: {e}")
+        # 失敗した場合は元のパスを使用
+        args.train_data_dir = args.drive_train_data_dir
+        args.valid_data_dir = args.drive_valid_data_dir
+        args.test_data_dir = args.drive_test_data_dir
+        args.use_fast_storage = False
     
     return args
 
@@ -539,35 +555,140 @@ def main():
         is_colab = False
         print("ローカル環境で実行中")
     
-    # トークナイザーのロード - 単一のトークナイザーのみを使用
+    # トークナイザーのロード
     from slm.tokenizer import load_tokenizer
-    tokenizer = load_tokenizer(args.tokenizer_name)
-    mask_token_id = tokenizer.mask_token_id
     
+    # トークナイザーの保存先を決定
+    tokenizer_save_dir = None
+    
+    # 最初の保存先は Google Drive のデータディレクトリ（新規ダウンロード時のみ）
+    if args.local_data_dir and os.path.exists(args.local_data_dir):
+        tokenizer_save_dir = args.local_data_dir
+    
+    # 既存の tokenizer_path パラメータがあればそれを優先
+    if args.tokenizer_path and os.path.exists(os.path.dirname(args.tokenizer_path)):
+        tokenizer_path = args.tokenizer_path
+    else:
+        # 既定の tokenizer_path を設定
+        tokenizer_path = None
+        
+        # 高速ストレージ優先で検索
+        if args.use_fast_storage:
+            # 高速ストレージのtokenizersパスを先に検索（データセットと一緒にコピーされるはず）
+            fast_paths = [
+                os.path.join(args.fast_data_dir, "tokenizers", "tokenizer.pkl"),
+                os.path.join(args.fast_data_dir, "tokenizers", "tokenizer_model.json")
+            ]
+            for path in fast_paths:
+                if os.path.exists(path):
+                    tokenizer_path = path
+                    print(f"高速ストレージで既存のトークナイザーを発見しました: {tokenizer_path}")
+                    break
+        
+        # 高速ストレージで見つからなければ、元のパスを検索
+        if tokenizer_path is None:
+            default_paths = [
+                os.path.join(args.local_data_dir, "tokenizers", "tokenizer.pkl"),
+                os.path.join(args.local_data_dir, "tokenizers", "tokenizer_model.json"),
+                os.path.join("/content/drive/MyDrive/slm/checkpoints/tokenizers", "tokenizer_model.json")
+            ]
+            
+            for path in default_paths:
+                if os.path.exists(path):
+                    tokenizer_path = path
+                    print(f"既存のトークナイザーを発見しました: {tokenizer_path}")
+                    break
+    
+    # トークナイザーを読み込む
+    print(f"トークナイザーを読み込み中...")
+    try:
+        # 拡張された load_tokenizer 関数を使用
+        tokenizer = load_tokenizer(
+            model_name=args.tokenizer_name,
+            tokenizer_path=tokenizer_path,
+            save_dir=tokenizer_save_dir,
+            use_fast=False
+        )
+    except Exception as e:
+        print(f"トークナイザーのロードに失敗しました: {e}")
+        print(f"標準のHugging Faceトークナイザーを使用します")
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, use_fast=False)
+    
+    mask_token_id = tokenizer.mask_token_id
     print(f"[MASK]トークンID: {mask_token_id}")
     
-    # データセット準備では、トレーニング・テスト・検証データが自動的に作成されます
+    # データセット準備の場合はハイスピードモードを無効化
+    if args.prepare_datasets:
+        args.use_fast_storage = False
+        print("データセット準備モードが有効なため、ハイスピードモードを無効化します。")
     
-    # データセットの準備
-    print(f"データディレクトリ: {args.local_data_dir}")
-    print(f"  - 訓練: {args.train_data_dir}")
-    print(f"  - 検証: {args.valid_data_dir}")
-    print(f"  - テスト: {args.test_data_dir}")
+    # データセットの情報表示
+    print(f"\nデータディレクトリ情報:")
+    if args.use_fast_storage:
+        print(f"  元のデータディレクトリ: {args.local_data_dir}")
+        print(f"  高速アクセス用ディレクトリ: {args.fast_data_dir}")
+        print(f"  - 訓練: {args.train_data_dir}")
+        print(f"  - 検証: {args.valid_data_dir}")
+        print(f"  - テスト: {args.test_data_dir}")
+    else:
+        print(f"  データディレクトリ: {args.local_data_dir}")
+        print(f"  - 訓練: {args.drive_train_data_dir}")
+        print(f"  - 検証: {args.drive_valid_data_dir}")
+        print(f"  - テスト: {args.drive_test_data_dir}")
     
-    # サブディレクトリを明示的に作成
-    try:
-        # 各ディレクトリを作成
-        print("データサブディレクトリを作成中...")
-        os.makedirs(args.train_data_dir, exist_ok=True)
-        print(f"  訓練データディレクトリ作成: {args.train_data_dir}")
+    # データが高速ストレージに存在するかチェック
+    if args.use_fast_storage:
+        fast_data_exists = os.path.exists(args.train_data_dir) and os.path.exists(args.valid_data_dir) and os.path.exists(args.test_data_dir)
         
-        os.makedirs(args.valid_data_dir, exist_ok=True)
-        print(f"  検証データディレクトリ作成: {args.valid_data_dir}")
-        
-        os.makedirs(args.test_data_dir, exist_ok=True)
-        print(f"  テストデータディレクトリ作成: {args.test_data_dir}")
-    except Exception as e:
-        print(f"エラー: ディレクトリ作成中に問題が発生しました: {e}")
+        if not fast_data_exists:
+            # サブディレクトリを明示的に作成
+            try:
+                print("\n高速ストレージにデータをコピーします...")
+                
+                # 各ディレクトリを作成
+                os.makedirs(args.train_data_dir, exist_ok=True)
+                os.makedirs(args.valid_data_dir, exist_ok=True)
+                os.makedirs(args.test_data_dir, exist_ok=True)
+                
+                # Google Driveから高速ストレージにデータをコピー
+                import shutil
+                from datetime import datetime
+                
+                # コピー開始時間
+                start_time = datetime.now()
+                print(f"コピー開始: {start_time.strftime('%H:%M:%S')}")
+                
+                # 訓練データのコピー
+                if os.path.exists(args.drive_train_data_dir):
+                    print(f"訓練データをコピー中: {args.drive_train_data_dir} → {args.train_data_dir}")
+                    shutil.copytree(args.drive_train_data_dir, args.train_data_dir, dirs_exist_ok=True)
+                
+                # 検証データのコピー
+                if os.path.exists(args.drive_valid_data_dir):
+                    print(f"検証データをコピー中: {args.drive_valid_data_dir} → {args.valid_data_dir}")
+                    shutil.copytree(args.drive_valid_data_dir, args.valid_data_dir, dirs_exist_ok=True)
+                
+                # テストデータのコピー
+                if os.path.exists(args.drive_test_data_dir):
+                    print(f"テストデータをコピー中: {args.drive_test_data_dir} → {args.test_data_dir}")
+                    shutil.copytree(args.drive_test_data_dir, args.test_data_dir, dirs_exist_ok=True)
+                
+                # コピー終了時間
+                end_time = datetime.now()
+                elapsed = end_time - start_time
+                print(f"コピー完了: {end_time.strftime('%H:%M:%S')} (所要時間: {elapsed.total_seconds():.1f}秒)")
+            except Exception as e:
+                print(f"エラー: 高速ストレージへのデータコピーに失敗しました: {e}")
+                print("Google Driveから直接データを読み込みます...")
+                args.use_fast_storage = False
+                args.train_data_dir = args.drive_train_data_dir
+                args.valid_data_dir = args.drive_valid_data_dir
+                args.test_data_dir = args.drive_test_data_dir
+    else:
+        # 高速ストレージを使わない場合はGoogle Driveのパスを使用
+        args.train_data_dir = args.drive_train_data_dir
+        args.valid_data_dir = args.drive_valid_data_dir
+        args.test_data_dir = args.drive_test_data_dir
     
     # デバッグモードの場合、詳細情報を表示
     if hasattr(args, 'debug') and args.debug:
@@ -576,7 +697,7 @@ def main():
         print(f"  訓練データディレクトリ存在: {os.path.exists(args.train_data_dir)}")
     
     if args.use_local_dataset:
-        print(f"ローカルデータセットを使用します")
+        print(f"\nローカルデータセットを使用します")
         # ローカルデータセットの読み込み
         dataset = {}
         

@@ -865,7 +865,7 @@ def load_and_prepare_dataset(paths_config: PathsConfig,
     
     try:
         # 前処理済みデータの確認
-        preprocessed_path = os.path.join(paths_config.data_dir, "processed_raw")
+        preprocessed_path = os.path.join(paths_config.dataset_dir, "processed_raw")
         if os.path.exists(preprocessed_path):
             logger.info("トークナイズ済みデータセットを読み込みます...")
             full_dataset = load_from_disk(preprocessed_path)

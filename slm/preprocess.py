@@ -34,7 +34,8 @@ def setup_paths_and_tokenizer(language='en'):
     paths_config = PathsConfig(language=language)
     
     # ディレクトリ作成
-    os.makedirs(paths_config.data_dir, exist_ok=True)
+    # dataset_dirはプロパティなので直接作成できない
+    os.makedirs(os.path.dirname(paths_config.dataset_dir), exist_ok=True)
     
     # トークナイザー読み込み
     print(f"トークナイザーをロード中: {paths_config.tokenizer_name}")
@@ -323,7 +324,7 @@ def main():
         save_dir = args.save_dir
     else:
         # デフォルトの保存先（オリジナル長を明示）
-        save_dir = os.path.join(paths_config.data_dir, "processed_raw")
+        save_dir = os.path.join(os.path.dirname(paths_config.dataset_dir), "processed_raw")
         # 直接ディレクトリ作成（dirnameは不要）
         os.makedirs(save_dir, exist_ok=True)
     

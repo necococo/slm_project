@@ -123,7 +123,7 @@ class TrainingConfig:
     def __init__(
         self,
         learning_rate: float = 2e-5,  # 1e-4だと数値が不安定になりロスにnanがでる
-        batch_size: int = 32,
+        batch_size: int = 64,
         mlm_epochs: int = 0,  # MLM学習をスキップ (0にするとMLM学習は実行されない)
         mlm_probability: float = 0.2,
         diffusion_epochs: int = 3,  # diffusion学習のみを実行
@@ -160,7 +160,6 @@ class PathsConfig:
         データや重み、その他の出力を保存するパスを管理します。
 
     Attributes:
-        data_dir: データセットを保存するベースディレクトリ
         checkpoint_dir: 学習済みモデル(重みファイル)を保存するディレクトリ
         log_dir: TensorBoardログや学習進捗を保存するディレクトリ
         dataset_name: 使用するデータセット名（例："NINJAL/NWJC", "shunk031/JGLUE", "wikitext"）
@@ -207,7 +206,6 @@ class PathsConfig:
         print(f"出力ディレクトリ: {self.output_base}")
         
         # 各種ディレクトリのパスを設定
-        self.data_dir = os.path.join(self.base_dir, "data")
         self.checkpoint_dir = os.path.join(self.output_base, "checkpoints")
         self.log_dir = os.path.join(self.output_base, "logs")
         self.dataset_name = dataset_name
@@ -222,13 +220,15 @@ class PathsConfig:
     def dataset_dir(self) -> str:
         """データセットの保存ディレクトリパスを返します"""
         if self.dataset_subset:
-            return os.path.join(self.data_dir, self.dataset_name, self.dataset_subset)
-        return os.path.join(self.data_dir, self.dataset_name)
+            return os.path.join(self.base_dir, "data", self.dataset_name, self.dataset_subset)
+        return os.path.join(self.base_dir, "data", self.dataset_name)
         
     @property
     def tokenizer_path(self) -> str:
         """トークナイザーモデルのパスを返します"""
-        return os.path.join(self.checkpoint_dir, "tokenizers", self.tokenizer_file)
+        # トークナイザーJSONファイル名
+        tokenizer_file = "tokenizer_model.json"
+        return os.path.join(self.dataset_dir, "tokenizers", tokenizer_file)
         
     @property
     def model_save_dir(self) -> str:
