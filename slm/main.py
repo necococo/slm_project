@@ -200,6 +200,8 @@ def parse_args():
                         help="ローカルにダウンロード済みのデータセットを使用する")
     parser.add_argument("--use_fast_storage", action="store_true", default=True,
                         help="データをランタイム直下にコピーして高速アクセス（デフォルトはTrue）")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="学習を再開するためのチェックポイントファイルのパス")
     
     # モデル設定
     parser.add_argument("--hidden_size", type=int, default=1024,
@@ -1077,6 +1079,13 @@ def main():
             paths_config=paths_config,
             seed=args.seed
         )
+        
+        # チェックポイントからモデルを読み込む（指定されている場合）
+        if args.checkpoint:
+            print(f"\n==== チェックポイントから学習を再開します ====")
+            print(f"チェックポイントパス: {args.checkpoint}")
+            trainer.load_checkpoint(args.checkpoint)
+            print(f"チェックポイントの読み込みが完了しました")
         
         # 訓練の実行前に重要なメッセージを表示
         print("\n==== 重要: データセット情報 ====")
