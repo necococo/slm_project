@@ -186,7 +186,7 @@ def parse_args():
     # データパス関連
     parser.add_argument("--dataset_name", type=str, default="fujiki/wiki40b_ja",
                         help="Hugging Faceからロードするデータセット名")
-    parser.add_argument("--local_data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/",
+    parser.add_argument("--local_data_dir", type=str, default="/content/drive/MyDrive/slm/data/fujiki",
                         help="ローカルにダウンロード済みのデータセットディレクトリ")
     parser.add_argument("--output_dir", type=str, default="./outputs",
                         help="モデル出力ディレクトリ")
@@ -222,6 +222,10 @@ def parse_args():
                         help="デバッグモード（詳細ログ出力）")
     
     args = parser.parse_args()
+    
+    # 自動的にローカルデータを使用するように設定
+    # 既存の前処理済みデータが存在すればそれを使う
+    args.use_local_dataset = True
     
     # データセットのスプリット別サブディレクトリのパスを設定
     args.train_data_dir = os.path.join(args.local_data_dir, "train")
@@ -636,7 +640,11 @@ def main():
                     
                 print("検証データとテストデータはありません。必要に応じて自動的に作成されます。")
             else:
-                raise FileNotFoundError(f"ディレクトリ構造が想定と異なります: {args.local_data_dir}")
+                # 前処理済みデータがない場合のみ新しくデータセット作成
+                print(f"ディレクトリ構造が想定と異なります: {args.local_data_dir}")
+                print("Hugging Faceからデータセットをロードします...")
+                dataset = prepare_dataset_from_hf(args.dataset_name, tokenizer, tokenizer, 
+                                                args.max_seq_len, max_valid_samples=1000, args=args)
         except Exception as e:
             print(f"ローカルデータセットのロードに失敗しました: {e}")
             print("Hugging Faceからデータセットをロードします...")

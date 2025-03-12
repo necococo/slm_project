@@ -20,10 +20,15 @@ def parse_args():
                         help="最大シーケンス長")
     parser.add_argument("--mask_token", type=str, default="<mask>",
                         help="マスクトークン")
+    # parser.add_argument("--test_text", type=str, 
+    #                     default="フッカーがリー軍に自軍を攻撃させようとした戦術は明らかに概念として健全だが、"
+    #                             "フッカーとその部下達が行った方法には恐ろしく欠陥があった。"
+    #                             "実際の戦闘では北軍がリーのそれまで「無敵の」兵士達と同じくらい戦闘...",
+    #                     help="テスト用テキスト")
     parser.add_argument("--mask_ratio", type=float, default=0.2,
                         help="マスク割合")
-    parser.add_argument("--dataset_path", type=str, required=True,
-                        help="データセットのパス（必須）")
+    parser.add_argument("--dataset_path", type=str, default="/content/drive/MyDrive/slm/data/wiki40b_ja/train",
+                        help="データセットのパス（指定するとデータセットのテストも行う）")
     
     return parser.parse_args()
 
