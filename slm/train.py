@@ -274,131 +274,6 @@ class Trainer:
         else:
             return loss.item()  # ローカルな損失値のみを返す
 
-    def _mlm_train_step(self, batch: Dict[str, torch.Tensor], step: int) -> float:
-        self.model.train()
-        input_ids = batch["input_ids"].to(self.device)
-        labels = batch["labels"].to(self.device)
-        
-        # メモリ最適化: バッチサイズが大きすぎる場合の対策
-        batch_size = input_ids.size(0)
-        max_micro_batch = 4  # マイクロバッチの最大サイズ (調整可能)
-        
-        # メモリ使用量を減らすためにCPUキャッシュをクリア
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        self.optimizer.zero_grad()
-        
-        # マイクロバッチでの処理（大きなバッチを小さく分割）
-        if batch_size > max_micro_batch and self.training_config.use_amp:
-            # バッチを分割
-            num_micro_batches = (batch_size + max_micro_batch - 1) // max_micro_batch
-            total_loss = 0.0
-            
-            # 入力と出力のチェック
-            print(f"入力形状: {input_ids.shape}, ラベル形状: {labels.shape}")
-            
-            for i in range(num_micro_batches):
-                start_idx = i * max_micro_batch
-                end_idx = min((i + 1) * max_micro_batch, batch_size)
-                micro_input_ids = input_ids[start_idx:end_idx]
-                micro_labels = labels[start_idx:end_idx]
-                
-                # オリジナルと同じ損失計算ロジック（マイクロバッチに対して）
-                if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                    with torch.cuda.amp.autocast():
-                        embeddings = self.model(micro_input_ids)
-                        classifier = self.model.get_classifier_weights()
-                        embeddings = embeddings.half()
-                        classifier = classifier.half()
-                        micro_loss = linear_cross_entropy(embeddings, classifier, micro_labels)
-                else:
-                    with torch.cuda.amp.autocast():
-                        logits = self.model(micro_input_ids)
-                        micro_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), micro_labels.view(-1))
-                
-                # 損失を正規化してバッチサイズ不変でスケール
-                micro_loss = micro_loss * (end_idx - start_idx) / batch_size
-                
-                # 勾配を蓄積
-                micro_loss.backward()
-                total_loss += micro_loss.item() * batch_size / (end_idx - start_idx)
-                
-                # マイクロバッチごとにメモリを解放
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            loss_item = total_loss
-        else:
-            # 通常の処理（バッチサイズが小さい場合）
-            if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                # Cut Cross Entropy用の処理
-                if self.scaler is not None:
-                    with torch.cuda.amp.autocast():
-                        embeddings = self.model(input_ids)  # hidden_statesが返される
-                        classifier = self.model.get_classifier_weights()
-                        # 必ず半精度に変換（linear_cross_entropy の要件）
-                        embeddings = embeddings.half()
-                        classifier = classifier.half()
-                        loss = linear_cross_entropy(embeddings, classifier, labels)
-                else:
-                    embeddings = self.model(input_ids)
-                    classifier = self.model.get_classifier_weights()
-                    loss = linear_cross_entropy(embeddings, classifier, labels)
-                    
-                    # デバッグ用：分類器の勾配情報をランダムに表示（1%の確率）
-                    if random.random() < 0.01:
-                        print(f"\n===== 勾配計算前（ステップ {step}）=====")
-                        print(f"分類器の重みの形状: {classifier.shape}")
-                        print(f"分類器のrequires_grad: {classifier.requires_grad}")
-            else:
-                # 通常のCross Entropy用の処理
-                if self.scaler is not None:
-                    with torch.cuda.amp.autocast():
-                        logits = self.model(input_ids)  # logitsが返される
-                        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-                else:
-                    logits = self.model(input_ids)
-                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-
-            # 勾配計算
-            loss.backward()
-            loss_item = loss.item()
-            
-            # デバッグ用：勾配計算後に分類器の勾配情報を表示（1%の確率）
-            if random.random() < 0.01 and hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                print(f"\n===== 勾配計算後（ステップ {step}）=====")
-                classifier_weight = self.model.classifier.weight
-                if hasattr(classifier_weight, 'grad'):
-                    grad_status = "存在する" if classifier_weight.grad is not None else "None"
-                    if classifier_weight.grad is not None:
-                        print(f"分類器の勾配ノルム: {classifier_weight.grad.norm().item():.6f}")
-                        print(f"分類器の勾配最大値: {classifier_weight.grad.max().item():.6f}")
-                        print(f"分類器の勾配最小値: {classifier_weight.grad.min().item():.6f}")
-                    else:
-                        print(f"分類器の勾配状態: {grad_status}")
-                else:
-                    print("分類器の勾配属性が存在しません")
-            
-        # 勾配クリッピング（追加）
-        if hasattr(self.training_config, 'clip_value') and self.training_config.clip_value:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.training_config.clip_value)
-        
-        self.optimizer.step()
-            
-        # ログ
-        if step % 5 == 0:
-            compute_time = 0.0  # 実測したい場合は time計測をどうぞ
-            self.writer.add_scalar("MLM/Loss", loss_item, step)
-            self.writer.add_scalar("MLM/ComputeTime(ms)", compute_time * 1000, step)
-            if torch.cuda.is_available():
-                self.writer.add_scalar("System/GPU Memory (MB)", torch.cuda.memory_allocated()/1e6, step)
-                self.writer.add_scalar("System/GPU Memory Free (MB)", torch.cuda.get_device_properties(0).total_memory/1e6 - torch.cuda.memory_allocated()/1e6, step)
-            est_flops = compute_flops_per_batch(self.model, input_ids.shape)
-            self.writer.add_scalar("System/Estimated TFLOPS", est_flops/1e12/(compute_time+1e-9), step)
-        
-        return loss_item
-
     def train_diffusion(self, num_epochs: Optional[int] = None) -> None:
         """
         拡散モデル方式でFine-tuning - TPU v5e-1 + Accelerateを使用
@@ -417,7 +292,7 @@ class Trainer:
             
         # diffuserもacceleratorで準備
         diffuser = SimpleTextDiffusion(
-            timesteps=20, 
+            timesteps=10,  # タイムステップを減らして計算効率を向上
             mask_token_id=mask_token_id, 
             vocab_size=vocab_size,
             beta_schedule="quadratic"  # より安定した学習のため二次関数的なスケジュールを使用
@@ -524,17 +399,17 @@ class Trainer:
                             if mask_count == 0:
                                 print("警告: ノイズ追加後もマスクトークンが見つかりません！")
                                 # 緊急対策としてノイズ関数を直接テスト (t=15)
-                                print("-- 緊急ノイズチェック t=15 --")
-                                high_t = 15  # 高いt値でテスト
-                                manual_noisy = self.diffuser.add_noise(batch['input_ids'][:1], high_t)
+                                print("-- 緊急ノイズチェック t=5 --")
+                                high_t = 5  # 高いt値でテスト
+                                manual_noisy = self.diffuser.add_noise(sample_batch['input_ids'][:1], high_t)
                                 manual_mask_count = (manual_noisy == tokenizer.mask_token_id).sum().item()
                                 print(f"手動ノイズ適用(t={high_t})後のマスク数: {manual_mask_count}")
                         else:
                             print("\nDiffusionノイズ追加テストは、学習開始後にサンプルとして実行されます")
-                            
-                print("ノイズ関数のテスト完了。学習を開始します。")
                 else:
                     print("トークナイザー情報が取得できません")
+                
+                print("ノイズ関数のテスト完了。学習を開始します。")
             except Exception as e:
                 print(f"データ確認中にエラーが発生しました: {e}")
         
@@ -562,32 +437,77 @@ class Trainer:
                         print(f"[初期学習フェーズ] バッチ {total_steps}, ノイズレベル t={t}")
                 
                 # Acceleratorを使用した学習ステップ
-                with self.accelerator.accumulate(self.model):
-                    step_loss = self._diffusion_train_step_accelerate(batch, diffuser, t, total_steps)
-                    epoch_loss += step_loss
+                try:
+                    with self.accelerator.accumulate(self.model):
+                        step_loss = self._diffusion_train_step_accelerate(batch, diffuser, t, total_steps)
+                        epoch_loss += step_loss
                     
+                    # 最初の10ステップは学習状態を詳しくチェック
+                    if is_main_process and total_steps < 10:
+                        print(f"[デバッグ] ステップ {total_steps} 完了: 損失={step_loss:.4f}")
+                        
                     # プログレスバーに現在の損失を表示
                     progress_bar.set_postfix(loss=f"{step_loss:.4f}")
                     
-                    # 定期的なメモリ使用状況のログと100バッチごとのチェックポイント保存
+                    # 定期的なメモリ使用状況のログとチェックポイント保存
                     if is_main_process:
-                        # メモリ使用状況をログ（20バッチごと）
-                        if (total_steps + 1) % 20 == 0:
+                        # メモリ使用状況をログ（10バッチごと）
+                        if (total_steps + 1) % 10 == 0:
                             gpu_info = ""
                             try:
                                 if torch.cuda.is_available():
                                     allocated = torch.cuda.memory_allocated() / 1024**3
                                     max_allocated = torch.cuda.max_memory_allocated() / 1024**3
                                     reserved = torch.cuda.memory_reserved() / 1024**3
-                                    gpu_info = f", GPU: {allocated:.2f}GB (最大: {max_allocated:.2f}GB, 予約: {reserved:.2f}GB)"
-                            except:
-                                pass
-                            print(f"ステップ {total_steps+1}, 損失: {step_loss:.4f}{gpu_info}")
+                                    free = (torch.cuda.get_device_properties(0).total_memory / 1024**3) - allocated
+                                    gpu_info = f", GPU: {allocated:.2f}GB/使用 {free:.2f}GB/空き (最大: {max_allocated:.2f}GB)"
+                                    
+                                    # メモリ消費が多い場合、警告を表示
+                                    if allocated > 35.0:  # 40GBの87.5%
+                                        print(f"警告: GPUメモリ使用量が高い ({allocated:.2f}GB/40GB)")
+                            except Exception as e:
+                                gpu_info = f", GPU情報取得エラー: {str(e)}"
+                            
+                            # 1イテレーションあたりの処理時間を推定
+                            iter_time = 0
+                            if hasattr(progress_bar, 'format_dict'):
+                                iter_time = progress_bar.format_dict.get('elapsed', 0) / max(1, total_steps)
+                            
+                            print(f"ステップ {total_steps+1}, 損失: {step_loss:.4f}, 時間: {iter_time:.2f}秒/it{gpu_info}")
                         
-                        # より頻繁にチェックポイントを保存（100バッチごと）
-                        if (total_steps + 1) % 100 == 0:
-                            self.save_checkpoint(f"diffusion_step_{total_steps+1}")
-                            print(f"ステップ {total_steps+1} でチェックポイントを保存しました")
+                        # より頻繁にチェックポイントを保存（50バッチごと）
+                        if (total_steps + 1) % 50 == 0:
+                            try:
+                                self.save_checkpoint(f"diffusion_step_{total_steps+1}")
+                                print(f"ステップ {total_steps+1} でチェックポイントを保存しました")
+                            except Exception as e:
+                                print(f"チェックポイント保存エラー: {str(e)}")
+                    
+                except Exception as e:
+                    if is_main_process:
+                        print(f"ステップ {total_steps} でエラー発生: {str(e)}")
+                        # 詳細なエラー情報
+                        import traceback
+                        traceback.print_exc()
+                        
+                        # 一時的にバッチを保存して後でデバッグできるようにする
+                        try:
+                            import pickle
+                            debug_path = os.path.join(self.checkpoint_dir, f"debug_batch_{total_steps}.pkl")
+                            with open(debug_path, 'wb') as f:
+                                # CPU上に移動してからデータを保存
+                                batch_cpu = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                                pickle.dump({'batch': batch_cpu, 't': t}, f)
+                            print(f"デバッグ用にバッチを保存: {debug_path}")
+                        except Exception as save_err:
+                            print(f"デバッグデータ保存エラー: {save_err}")
+                    
+                    # 初期の数ステップでエラーが発生した場合は中断
+                    if total_steps < 5:
+                        raise e  # エラーを再度投げて中断
+                    
+                    # それ以外はエラーをスキップして続行
+                    print("エラーをスキップして続行します")
 
                 total_steps += 1
 
@@ -617,40 +537,6 @@ class Trainer:
         Acceleratorを使用したDiffusion学習ステップ
         TPU v5e-1向けに最適化
         """
-        self.model.train()
-        
-        # 定期的なサンプルチェック (250ステップごと)
-        if self.accelerator.is_main_process and step % 250 == 0:
-            try:
-                tokenizer = self.model.config.tokenizer
-                if tokenizer and diffuser:
-                    print(f"\n--- ステップ {step} サンプル生成テスト ---")
-                    # 入力サンプルを取得
-                    sample_ids = batch["input_ids"][0].cpu().tolist()
-                    sample_text = tokenizer.decode(sample_ids)
-                    print(f"元のテキスト: {sample_text[:100]}..." if len(sample_text) > 100 else sample_text)
-                    
-                    # ノイズ追加 - 低ノイズから始める
-                    # t値を1に変更（0ではなく）- 最小でも少しノイズを入れる
-                    t_min = torch.tensor([1], device=batch["input_ids"].device)
-                    noisy_ids, _ = diffuser(batch["input_ids"][:1], t_min)
-                    noisy_text = tokenizer.decode(noisy_ids[0].cpu().tolist())
-                    print(f"ノイズ後 (低ノイズ t=0): {noisy_text[:100]}..." if len(noisy_text) > 100 else noisy_text)
-                    
-                    # 中間ノイズレベルも確認
-                    t_mid = torch.tensor([diffuser.timesteps // 2], device=batch["input_ids"].device)
-                    noisy_ids_mid, _ = diffuser(batch["input_ids"][:1], t_mid)
-                    mask_count_mid = noisy_ids_mid[0].cpu().tolist().count(tokenizer.mask_token_id)
-                    total_tokens = len(noisy_ids_mid[0])
-                    print(f"中間ノイズ (t={diffuser.timesteps // 2}): マスク率 {mask_count_mid}/{total_tokens} ({mask_count_mid/total_tokens*100:.1f}%)")
-                    
-                    # マスク率を計算
-                    mask_count = noisy_ids[0].cpu().tolist().count(tokenizer.mask_token_id)
-                    total_tokens = len(noisy_ids[0])
-                    print(f"マスク率: {mask_count}/{total_tokens} ({mask_count/total_tokens*100:.1f}%)")
-            except Exception as e:
-                print(f"サンプルチェック中にエラー: {e}")
-        
         # input_idsとlabelsキーの存在確認 - Acceleratorは既にデバイスに配置済み
         if "input_ids" in batch:
             input_ids = batch["input_ids"]
@@ -714,81 +600,6 @@ class Trainer:
             return self.accelerator.gather(loss).mean().item()
         else:
             return loss.item()  # ローカルな損失値のみを返す
-
-    def _diffusion_train_step(self, batch: Dict[str, Any], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
-        self.model.train()
-        
-        # バッチの変換を安全に行う
-        def safe_to_device(tensor_or_list):
-            if isinstance(tensor_or_list, torch.Tensor):
-                return tensor_or_list.to(self.device)
-            elif isinstance(tensor_or_list, list):
-                # リストならテンソルに変換
-                return torch.tensor(tensor_or_list, device=self.device)
-            else:
-                raise ValueError(f"Unsupported type: {type(tensor_or_list)}")
-        
-        # input_idsとlabelsキーが存在するか確認（データフォーマットが異なる可能性に対応）
-        if "input_ids" in batch:
-            input_ids = safe_to_device(batch["input_ids"])
-        elif "tokens" in batch:
-            input_ids = safe_to_device(batch["tokens"])
-        else:
-            raise ValueError("バッチにinput_idsまたはtokensキーが存在しません")
-            
-        # ラベルの処理
-        if "labels" in batch:
-            labels = safe_to_device(batch["labels"])
-        else:
-            # ラベルが提供されていない場合は、diffuserを使って生成する
-            noisy_tokens, labels = diffuser(input_ids.clone(), torch.tensor([t], device=self.device))
-        
-        self.optimizer.zero_grad()
-        
-        # use_cut_cross_entropyフラグに基づいて処理を変更
-        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-            # Cut Cross Entropy用の処理
-            if self.scaler is not None:
-                with torch.cuda.amp.autocast():
-                    embeddings = self.model(input_ids)
-                    classifier = self.model.get_classifier_weights()
-                    # cut_cross_entropy は embeddings, classifier が fp16 である必要があるので
-                    embeddings = embeddings.half()
-                    classifier = classifier.half()
-                    loss = linear_cross_entropy(embeddings, classifier, labels)
-                
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                embeddings = self.model(input_ids)
-                classifier = self.model.get_classifier_weights()
-                embeddings = embeddings.half()
-                classifier = classifier.half()
-                loss = linear_cross_entropy(embeddings, classifier, labels)
-                loss.backward()
-                self.optimizer.step()
-        else:
-            # 通常のCross Entropy用の処理
-            if self.scaler is not None:
-                with torch.cuda.amp.autocast():
-                    logits = self.model(input_ids)
-                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-                
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                logits = self.model(input_ids)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-                loss.backward()
-                self.optimizer.step()
-        
-        if step % 5 == 0:
-            self.writer.add_scalar("Diffusion/Loss", loss.item(), step)
-            self.writer.add_scalar("Diffusion/Timestep", t, step)
-        
-        return loss.item()
 
     def validate(self) -> float:
         """

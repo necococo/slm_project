@@ -206,7 +206,7 @@ def parse_args():
                         help="モデルの隠れ層のサイズ")
     parser.add_argument("--num_layers", type=int, default=3,
                         help="モデルのレイヤー数")
-    parser.add_argument("--max_seq_len", type=int, default=512,
+    parser.add_argument("--max_seq_len", type=int, default=256,
                         help="最大シーケンス長")
     
     # 学習設定
@@ -801,6 +801,12 @@ def main():
                     try:
                         train_dataset = load_from_disk(args.train_data_dir)
                         dataset["train"] = train_dataset["train"] if "train" in train_dataset else train_dataset
+                        
+                        # データセットを少量にして実験
+                        if len(dataset["train"]) > 1000:
+                            print(f"開発用に訓練データを制限: {len(dataset['train'])} → 1000 件")
+                            dataset["train"] = dataset["train"].select(range(1000))
+                        
                         print(f"訓練データを読み込みました: {len(dataset['train'])} 件")
                     except Exception as e:
                         print(f"訓練データの読み込みに失敗: {e}")
@@ -915,13 +921,17 @@ def main():
     model_config.set_tokenizer(tokenizer)
     
     # トレーニング設定
-    # より安全なバッチサイズで開始し、後で徐々に増やす
-    batch_size = 128  # 安全な値から始める
-    print(f"バッチサイズを調整: {args.batch_size} → {batch_size} (安定性のため)")
+    # より小さいバッチサイズを使用して速度と安定性のバランスを取る
+    batch_size = 32  # 安定性と速度のバランスを取るため小さめの値を使用
+    print(f"バッチサイズを調整: {args.batch_size} → {batch_size} (速度と安定性のため)")
+    
+    # 低い学習率からスタート
+    learning_rate = 5e-6  # 安定性のため小さい値からスタート
+    print(f"学習率を調整: {args.learning_rate} → {learning_rate} (安定性のため)")
     
     training_config = TrainingConfig(
-        learning_rate=args.learning_rate,
-        batch_size=batch_size,  # バッチサイズを大きく設定
+        learning_rate=learning_rate,
+        batch_size=batch_size,  # バッチサイズの設定
         mlm_epochs=0,  # MLM学習はスキップ
         diffusion_epochs=args.epochs,  # Diffusion学習のみ実行
         weight_decay=0.01,
