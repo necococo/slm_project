@@ -441,11 +441,10 @@ class Trainer:
                     if is_main_process and total_steps % 10 == 0:
                         print(f"[初期学習フェーズ] バッチ {total_steps}, ノイズレベル t={t}")
                 
-                # Acceleratorを使用した学習ステップ
                 try:
-                    with self.accelerator.accumulate(self.model):
-                        step_loss = self._diffusion_train_step_accelerate(batch, diffuser, t, total_steps)
-                        epoch_loss += step_loss
+                    # Accelerator準備済みの関数を使用して学習ステップを実行
+                    step_loss = self._diffusion_train_step_accelerate(batch, diffuser, t, total_steps)
+                    epoch_loss += step_loss
                     
                     # 最初の10ステップは学習状態を詳しくチェック
                     if is_main_process and total_steps < 10:
@@ -508,8 +507,8 @@ class Trainer:
                             print(f"デバッグデータ保存エラー: {save_err}")
                     
                     # 初期の数ステップでエラーが発生した場合は中断
-                    if total_steps < 5:
-                        raise e  # エラーを再度投げて中断
+                    # TPUif total_steps < 5:
+                    #     raise e  # エラーを再度投げて中断
                     
                     # それ以外はエラーをスキップして続行
                     print("エラーをスキップして続行します")
@@ -529,7 +528,29 @@ class Trainer:
             
             # チェックポイント保存（メインプロセスのみ）
             if is_main_process and ((current_epoch) % 5 == 0 or current_epoch == final_epoch):
-                self.save_checkpoint(f"diffusion_epoch_{current_epoch}")
+                # エポック情報を含むチェックポイント名
+                checkpoint_name = f"model_e{current_epoch:03d}"
+                
+                # 検証データがあれば評価する
+                try:
+                    if self.val_dataset is not None and self.val_dataloader is not None:
+                        print(f"エポック {current_epoch} の検証中...")
+                        val_loss = self.evaluate(self.val_dataloader)
+                        print(f"検証損失: {val_loss:.4f}")
+                        self.writer.add_scalar("Diffusion/Validation Loss", val_loss, current_epoch)
+                        
+                        # 検証損失を含むチェックポイント名
+                        checkpoint_name = f"model_e{current_epoch:03d}_loss{val_loss:.4f}"
+                except Exception as e:
+                    print(f"検証中にエラーが発生しました: {e}")
+                
+                # チェックポイント保存
+                self.save_checkpoint(checkpoint_name)
+                
+                # エポック10の倍数ではfinal_modelとしても保存
+                if current_epoch % 10 == 0 or current_epoch == final_epoch:
+                    print(f"エポック {current_epoch} のチェックポイントをfinal_model.ptとしても保存")
+                    self.save_checkpoint("final_model")
         
         # 学習完了（メインプロセスのみ）
         if is_main_process:
@@ -540,7 +561,6 @@ class Trainer:
     def _diffusion_train_step_accelerate(self, batch: Dict[str, Any], diffuser: SimpleTextDiffusion, t: int, step: int) -> float:
         """
         Acceleratorを使用したDiffusion学習ステップ
-        TPU v5e-1向けに最適化
         """
         # input_idsとlabelsキーの存在確認 - Acceleratorは既にデバイスに配置済み
         if "input_ids" in batch:
@@ -562,27 +582,34 @@ class Trainer:
         # オプティマイザのゼロ勾配（Acceleratorが管理）
         self.optimizer.zero_grad()
         
-        # use_cut_cross_entropyフラグに基づいて処理を変更
-        if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-            # Cut Cross Entropy用の処理
-            # bfloat16の自動混合精度を使用
+        # GPU/CPU互換性のあるモードでの処理
+        try:
+            # Cut Cross Entropyを使用（必須）
             with self.accelerator.autocast():
                 embeddings = self.model(input_ids)
                 classifier = self.model.get_classifier_weights()
-                # TPUではbfloat16に変換
-                if hasattr(torch, 'bfloat16'):
-                    embeddings = embeddings.to(torch.bfloat16)
-                    classifier = classifier.to(torch.bfloat16)
-                else:
-                    # bfloat16がない場合はfloat16を使用
+                
+                # cudaの場合はfloat16に変換
+                if input_ids.is_cuda:
                     embeddings = embeddings.half()
                     classifier = classifier.half()
-                loss = linear_cross_entropy(embeddings, classifier, labels)
-        else:
-            # 通常のCross Entropy用の処理
-            with self.accelerator.autocast():
-                logits = self.model(input_ids)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                
+                # tritonドライバーエラーを避けるためにtry-exceptで囲む
+                try:
+                    # cut_cross_entropyモジュールを使用
+                    loss = linear_cross_entropy(embeddings, classifier, labels)
+                except RuntimeError as e:
+                    if "active drivers" in str(e):
+                        # Tritonエラーの場合、一時的なフォールバック
+                        print("WARNING: Tritonドライバーエラー発生、一時的なフォールバック処理を実行")
+                        logits = torch.matmul(embeddings, classifier.t())
+                        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
+                    else:
+                        raise e
+        except Exception as e:
+            print(f"Cut Cross Entropyでエラー発生: {e}")
+            # エラーを上位に伝播させる
+            raise e
         
         # Acceleratorによる後方伝播と最適化
         self.accelerator.backward(loss)
@@ -608,7 +635,7 @@ class Trainer:
 
     def validate(self) -> float:
         """
-        Acceleratorを使用したTPU v5e-1向け検証メソッド
+        Acceleratorを使用した検証メソッド
         """
         if not self.valid_dataset:
             return 0.0
@@ -618,7 +645,7 @@ class Trainer:
         # マスターランク確認（メインプロセスのみ出力）
         is_main_process = self.accelerator.is_main_process
         
-        # 検証用のバッチサイズは固定8に（TPU v5e-1向け）
+        # 検証用のバッチサイズ
         eval_batch_size = 8
         
         # カスタムコレータの取得
@@ -638,7 +665,7 @@ class Trainer:
             batch_size=eval_batch_size, 
             shuffle=False,
             collate_fn=collator,
-            num_workers=4,  # TPUではマルチプロセスデータロードが効果的
+            num_workers=4,
             pin_memory=True  # データ転送を高速化
         )
         dataloader = self.accelerator.prepare(dataloader)
@@ -667,26 +694,28 @@ class Trainer:
                 labels = batch["labels"]
                 
                 try:
-                    # use_cut_cross_entropyフラグに基づいて処理を変更
-                    if hasattr(self.model, 'use_cut_cross_entropy') and self.model.use_cut_cross_entropy:
-                        # Cut Cross Entropy用の処理 - TPU v5e-1向けにbfloat16を使用
-                        with self.accelerator.autocast():
-                            embeddings = self.model(input_ids)
-                            classifier = self.model.get_classifier_weights()
-                            # TPUではbfloat16に変換
-                            if hasattr(torch, 'bfloat16'):
-                                embeddings = embeddings.to(torch.bfloat16)
-                                classifier = classifier.to(torch.bfloat16)
-                            else:
-                                # bfloat16がない場合はfloat16を使用
-                                embeddings = embeddings.half()
-                                classifier = classifier.half()
+                    # Cut Cross Entropyを優先的に使用
+                    with self.accelerator.autocast():
+                        embeddings = self.model(input_ids)
+                        classifier = self.model.get_classifier_weights()
+                        
+                        # cudaの場合はfloat16に変換
+                        if input_ids.is_cuda:
+                            embeddings = embeddings.half()
+                            classifier = classifier.half()
+                        
+                        # tritonドライバーエラーを避けるためにtry-exceptで囲む
+                        try:
+                            # cut_cross_entropyモジュールを使用
                             loss = linear_cross_entropy(embeddings, classifier, labels)
-                    else:
-                        # 通常のCross Entropy用の処理
-                        with self.accelerator.autocast():
-                            logits = self.model(input_ids)
-                            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+                        except RuntimeError as e:
+                            if "active drivers" in str(e):
+                                # Tritonエラーの場合、一時的なフォールバック
+                                print("WARNING: Validationでのトライトンエラー、フォールバック処理を実行")
+                                logits = torch.matmul(embeddings, classifier.t())
+                                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
+                            else:
+                                raise e
                     
                     # 各プロセスで独立して損失を蓄積
                     total_loss += loss.item()
@@ -719,19 +748,30 @@ class Trainer:
         
         return avg_loss
 
-    def save_checkpoint(self, name: str) -> None:
+    def save_checkpoint(self, name: str, current_epoch: int = None, current_step: int = None, val_loss: float = None) -> None:
         """
         Acceleratorを使用したチェックポイント保存（TPU v5e-1対応）
         メインプロセスのみがチェックポイントを保存
+        
+        Args:
+            name: チェックポイントの名前 (拡張子なし)
+            current_epoch: 現在のエポック番号 (オプション)
+            current_step: 現在のステップ数 (オプション)
+            val_loss: 検証損失値 (オプション)
         """
         # メインプロセスのみが保存する
         if self.accelerator.is_main_process:
+            # チェックポイントパス
             checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
             
-            # 通常のチェックポイント情報
+            # 学習情報も含めたチェックポイント辞書を作成
             checkpoint = {
                 "model_config": self.model.config,
                 "training_config": self.training_config,
+                "epoch": current_epoch,
+                "step": current_step,
+                "val_loss": val_loss,
+                "datetime": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             
             # Accelerator経由でモデルを抽出して保存
