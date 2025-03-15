@@ -533,9 +533,9 @@ class Trainer:
                 
                 # 検証データがあれば評価する
                 try:
-                    if self.val_dataset is not None and self.val_dataloader is not None:
+                    if self.valid_dataset is not None:
                         print(f"エポック {current_epoch} の検証中...")
-                        val_loss = self.evaluate(self.val_dataloader)
+                        val_loss = self.validate()
                         print(f"検証損失: {val_loss:.4f}")
                         self.writer.add_scalar("Diffusion/Validation Loss", val_loss, current_epoch)
                         
