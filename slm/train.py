@@ -37,7 +37,7 @@ class Trainer:
         train_dataset: Dataset,
         valid_dataset: Optional[Dataset] = None,
         training_config: Optional[TrainingConfig] = None,
-        paths_config: Optional[PathsConfig] = None,
+        paths_config: Optional<PathsConfig] = None,
         device: torch.device = None,
         seed: int = 42
     ):
@@ -789,21 +789,36 @@ class Trainer:
         # 全プロセスが同期するのを待つ
         self.accelerator.wait_for_everyone()
 
-    def load_checkpoint(self, path: str) -> int:
+    def load_checkpoint(self, path: str) -> tuple[int, int]:
         """
         Acceleratorを使用したチェックポイント読み込み（TPU v5e-1対応）
-        チェックポイントの次のエポック番号を返す
+        チェックポイントの次のエポック番号とステップ数を返す
+        
+        Args:
+            path: チェックポイントファイルのパス
+            
+        Returns:
+            tuple[int, int]: (start_epoch, start_step) - 次のエポック番号とステップ数
         
         PyTorch 2.6+対応:
         - weights_only=Falseを明示的に指定してクラス情報も含めて読み込む
         - または、add_safe_globalsを使用して許可リストに追加
         """
-        # PyTorch 2.6+対応: ModelConfigを安全なグローバルとして登録
+        # PyTorch 2.6+対応: 必要なクラスを安全なグローバルとして登録
         from slm.config import ModelConfig, TrainingConfig
         import torch.serialization
         
-        # モデル設定クラスを許可リストに追加
-        torch.serialization.add_safe_globals([ModelConfig, TrainingConfig])
+        # T5Tokenizerも明示的に追加
+        try:
+            from transformers.models.t5.tokenization_t5 import T5Tokenizer
+            torch.serialization.add_safe_globals([ModelConfig, TrainingConfig, T5Tokenizer])
+        except ImportError:
+            # transformersライブラリがインストールされていない場合はスキップ
+            torch.serialization.add_safe_globals([ModelConfig, TrainingConfig])
+        
+        # デフォルト値を事前に設定しておく（チェックポイントから取得できない場合用）
+        start_epoch = 0
+        start_step = 0
         
         try:
             # まず安全なグローバルリストを使用して読み込み
@@ -812,13 +827,22 @@ class Trainer:
             # 失敗した場合、weights_only=Falseで再試行（信頼できるチェックポイントの場合）
             if self.accelerator.is_main_process:
                 print(f"通常の読み込みに失敗しました。weights_only=Falseで再試行します: {e}")
-            checkpoint = torch.load(path, map_location=self.accelerator.device, weights_only=False)
+            try:
+                checkpoint = torch.load(path, map_location=self.accelerator.device, weights_only=False)
+            except Exception as e2:
+                if self.accelerator.is_main_process:
+                    print(f"weights_only=Falseでも失敗しました。チェックポイントを読み込めません: {e2}")
+                    return start_epoch, start_step  # デフォルト値を返す
         
         # まずAcceleratorからオリジナルモデルを取得
         unwrapped_model = self.accelerator.unwrap_model(self.model)
         
         # 状態辞書をロード
-        unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
+        try:
+            unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
+        except Exception as e:
+            if self.accelerator.is_main_process:
+                print(f"モデル状態のロードに失敗しました: {e}")
         
         # オプティマイザもロードする場合
         if "optimizer_state_dict" in checkpoint:
@@ -832,24 +856,48 @@ class Trainer:
                         if "lr" in checkpoint.get("optimizer_state_dict", {}).get("param_groups", [{}])[0]:
                             param_group['lr'] = checkpoint["optimizer_state_dict"]["param_groups"][0]["lr"]
         
-        start_epoch = 0
-        if "epoch" in checkpoint:
-            # チェックポイント内にエポック情報がある場合はそちらを優先
+        # チェックポイントのファイル名やメタデータからエポック番号とステップ数を抽出
+        import re
+        
+        # チェックポイントから直接情報を取得（Noneチェック付き）
+        if "epoch" in checkpoint and checkpoint["epoch"] is not None:
             start_epoch = checkpoint["epoch"]
-        start_step = 0
-        if "step" in checkpoint:
-            # チェックポイント内にエポック情報がある場合はそちらを優先
+        
+        if "step" in checkpoint and checkpoint["step"] is not None:
             start_step = checkpoint["step"]
-
+        
+        # ファイル名からのエポック/ステップ情報抽出（メタデータがない場合のバックアップ）
+        if start_epoch == 0:
+            # diffusion_epoch_X パターンをチェック
+            epoch_match = re.search(r'diffusion_epoch_(\d+)', path)
+            if epoch_match:
+                start_epoch = int(epoch_match.group(1))
+        
+        if start_step == 0:
+            # diffusion_step_X パターンをチェック
+            step_match = re.search(r'diffusion_step_(\d+)', path)
+            if step_match:
+                start_step = int(step_match.group(1))
+                
+                # エポックが取得できていない場合は、ステップからエポックを推定
+                if start_epoch == 0:
+                    # おおよそのバッチサイズとデータセットサイズからエポックを推定
+                    batch_size = getattr(self.training_config, 'batch_size', 8)
+                    dataset_size = len(self.train_dataset) if self.train_dataset else 1000
+                    approx_steps_per_epoch = max(1, dataset_size // batch_size)
+                    start_epoch = start_step // approx_steps_per_epoch
+                    if self.accelerator.is_main_process:
+                        print(f"ステップ {start_step} からエポックを推定: {start_epoch}")
+        
         # メインプロセスのみが出力
         if self.accelerator.is_main_process:
             print(f"チェックポイント {path} を読み込みました")
-            print(f"次のエポック: {start_epoch + 1}")
+            print(f"次のエポック: {start_epoch + 1}, 開始ステップ: {start_step}")
         
         # 全プロセスが同期するのを待つ
         self.accelerator.wait_for_everyone()
         
-        # 抽出したエポック番号を返す
+        # エポック番号とステップ数のタプルを返す
         return start_epoch, start_step
 
     def close(self) -> None:
