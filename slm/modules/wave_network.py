@@ -457,6 +457,15 @@ class WaveNetworkLM(nn.Module):
         super().__init__()
         self.config = config
         
+        # マスクトークンIDがvocab_sizeを超える場合の対応
+        if hasattr(config, 'tokenizer') and config.tokenizer is not None:
+            if hasattr(config.tokenizer, 'mask_token_id') and config.tokenizer.mask_token_id is not None:
+                if config.tokenizer.mask_token_id >= config.vocab_size:
+                    print(f"警告: マスクトークンID ({config.tokenizer.mask_token_id}) が語彙サイズ ({config.vocab_size}) を超えています")
+                    old_vocab_size = config.vocab_size
+                    config.vocab_size = config.tokenizer.mask_token_id + 1
+                    print(f"既存モデルとの互換性を維持するため、vocab_sizeを {old_vocab_size} から {config.vocab_size} に拡張しました")
+        
         vocab_size = config.vocab_size
         hidden_size = config.hidden_size
         num_layers = config.num_layers
@@ -619,3 +628,80 @@ class WaveNetworkLM(nn.Module):
                 if noise_scale is not None:
                     result[i] = noise_scale.detach().cpu()
         return result
+
+    def load_state_dict(self, state_dict, strict=True):
+        """状態辞書をロードする際、出力層サイズの不一致を処理する拡張メソッド"""
+        try:
+            # 標準のload_state_dictを試す
+            return super().load_state_dict(state_dict, strict)
+        except RuntimeError as e:
+            # エラーメッセージが出力層サイズの不一致に関するものか確認
+            if 'size mismatch' in str(e) and ('output_layer.weight' in str(e) or 'token_embedding.weight' in str(e)):
+                print("出力層または埋め込み層のサイズ不一致を検出しました。サイズ調整を試みます...")
+                
+                # 新しい状態辞書を作成
+                new_state_dict = {}
+                
+                # 各層を処理
+                for key, value in state_dict.items():
+                    if key == 'token_embedding.weight' or key == 'output_layer.weight':
+                        # チェックポイントの出力層/埋め込み層のサイズ
+                        checkpoint_vocab_size = value.size(0)
+                        # 現在のモデルのサイズ
+                        model_vocab_size = self.config.vocab_size
+                        
+                        print(f"チェックポイント語彙サイズ: {checkpoint_vocab_size}, モデル語彙サイズ: {model_vocab_size}")
+                        
+                        if checkpoint_vocab_size < model_vocab_size:
+                            # チェックポイントのサイズが小さい場合は、拡張する
+                            if key == 'token_embedding.weight':
+                                current_shape = getattr(self, 'token_embedding').weight.shape
+                                new_emb = torch.nn.init.normal_(
+                                    torch.zeros(model_vocab_size, current_shape[1]),
+                                    mean=0.0,
+                                    std=0.02
+                                ).to(value.device)
+                                new_emb[:checkpoint_vocab_size] = value
+                                new_state_dict[key] = new_emb
+                                print(f"{key} を {checkpoint_vocab_size} から {model_vocab_size} に拡張しました")
+                            elif key == 'output_layer.weight':
+                                # 出力層が明示的に定義されている場合
+                                if hasattr(self, 'output_layer'):
+                                    current_shape = getattr(self, 'output_layer').weight.shape
+                                    new_out = torch.nn.init.normal_(
+                                        torch.zeros(model_vocab_size, current_shape[1]),
+                                        mean=0.0,
+                                        std=0.02
+                                    ).to(value.device)
+                                    new_out[:checkpoint_vocab_size] = value
+                                    new_state_dict[key] = new_out
+                                    print(f"{key} を {checkpoint_vocab_size} から {model_vocab_size} に拡張しました")
+                        elif checkpoint_vocab_size > model_vocab_size:
+                            # チェックポイントのサイズが大きい場合は、モデルのサイズを増やす
+                            print(f"警告: チェックポイントの語彙サイズ ({checkpoint_vocab_size}) がモデル ({model_vocab_size}) より大きいです")
+                            print(f"モデルの語彙サイズを {checkpoint_vocab_size} に拡張します")
+                            
+                            # 設定を更新
+                            self.config.vocab_size = checkpoint_vocab_size
+                            
+                            # 埋め込み層を拡張
+                            if key == 'token_embedding.weight':
+                                old_emb = self.token_embedding
+                                self.token_embedding = nn.Embedding(checkpoint_vocab_size, self.config.hidden_size)
+                                # 既存の重みを初期化
+                                with torch.no_grad():
+                                    self.token_embedding.weight[:model_vocab_size].copy_(old_emb.weight)
+                            
+                            new_state_dict[key] = value
+                        else:
+                            # サイズが同じ
+                            new_state_dict[key] = value
+                    else:
+                        # その他の層はそのまま
+                        new_state_dict[key] = value
+                
+                # 修正した状態辞書でロード
+                return super().load_state_dict(new_state_dict, strict=False)
+            else:
+                # その他のエラーは再発生
+                raise e

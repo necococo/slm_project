@@ -1030,10 +1030,6 @@ class Trainer:
             
         Returns:
             tuple[int, int]: (start_epoch, start_step) - 次のエポック番号とステップ数
-        
-        PyTorch 2.6+対応:
-        - weights_only=Falseを明示的に指定してクラス情報も含めて読み込む
-        - または、add_safe_globalsを使用して許可リストに追加
         """
         # PyTorch 2.6+対応: 必要なクラスを安全なグローバルとして登録
         from slm.config import ModelConfig, TrainingConfig
@@ -1068,7 +1064,19 @@ class Trainer:
         # まずAcceleratorからオリジナルモデルを取得
         unwrapped_model = self.accelerator.unwrap_model(self.model)
         
-        # 状態辞書をロード
+        # チェックポイントの情報を確認
+        if self.accelerator.is_main_process:
+            # チェックポイントとモデルの語彙サイズを確認
+            if "model_config" in checkpoint:
+                checkpoint_vocab_size = checkpoint["model_config"].vocab_size
+                model_vocab_size = unwrapped_model.config.vocab_size
+                
+                if checkpoint_vocab_size != model_vocab_size:
+                    print(f"警告: チェックポイント語彙サイズ ({checkpoint_vocab_size}) と"
+                          f"モデル語彙サイズ ({model_vocab_size}) が異なります")
+                    print("拡張された load_state_dict メソッドで調整されます")
+        
+        # 状態辞書をロード - 拡張されたload_state_dictメソッドが自動的にサイズ調整を行う
         try:
             unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
         except Exception as e:
