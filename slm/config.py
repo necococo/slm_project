@@ -6,7 +6,7 @@ import os
 
 class ModelConfig:
     """
-    Wiki40B日本語データセット専用のWave Network設定
+    モデルの設定を保持するクラス
     
     Attributes:
         hidden_size: モデル内部の隠れ次元
@@ -17,99 +17,91 @@ class ModelConfig:
     """
     def __init__(
         self,
-        hidden_size: int = 1024,
-        num_layers: int = 3,
-        vocab_size: Optional[int] = 32100,  # megagonlabs/t5-base-japanese-webの語彙サイズ
+        hidden_size: int = 768,
+        num_layers: int = 12,
+        vocab_size: int = 32000,
         max_seq_len: int = 512,
-        dropout_prob: float = 0.2,
+        dropout_prob: float = 0.1,
         use_rope: bool = True,
-        # 以下はデフォルト値で固定し、ユーザーが変更する必要のないパラメータ
         use_wavelet: bool = True,
         wavelet_name: str = "haar",
-        norm_scheme: str = "post",
         activation: str = "gelu",
-        complex_init_scale: float = 0.02,
         use_bio_noise: bool = True,
-        noise_std: float = 0.1,
-        trainable_noise: bool = False,
-    ) -> None:
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self._vocab_size = vocab_size
-        self.max_seq_len = max_seq_len
-        self.dropout_prob = dropout_prob
-        self.use_rope = use_rope
-        self.use_wavelet = use_wavelet
-        self.wavelet_name = wavelet_name
-        self.tokenizer = None  # トークナイザーを後から設定可能に
-        # self.norm_scheme = norm_scheme  # 追加: Pre-LN vs Post-LN
-        self.activation = activation  # 追加: 活性化関数
-        self.complex_init_scale = complex_init_scale
+        noise_std: float = 0.1
+    ):
+        self._hidden_size = hidden_size
+        self._num_layers = num_layers
+        self._vocab_size = vocab_size  # private変数に変更
+        self._max_seq_len = max_seq_len
+        self._dropout_prob = dropout_prob
+        self._use_rope = use_rope
+        self._use_wavelet = use_wavelet
+        self._wavelet_name = wavelet_name
+        self._activation = activation
+        self._use_bio_noise = use_bio_noise
+        self._noise_std = noise_std
         
-        # 生体ゆらぎ関連の設定
-        self.use_bio_noise = use_bio_noise
-        self.noise_std = noise_std
-        self.trainable_noise = trainable_noise
-        
-        # ウェーブレット関連の設定
-        self.use_wavelet = use_wavelet
-        self.wavelet_name = wavelet_name
+        self._tokenizer = None  # トークナイザーの保存用
+    
+    @property
+    def hidden_size(self) -> int:
+        return self._hidden_size
+    
+    @property
+    def num_layers(self) -> int:
+        return self._num_layers
     
     @property
     def vocab_size(self) -> int:
-        """
-        語彙サイズを取得。トークナイザーが設定されている場合はそこから取得、
-        なければ初期化時に設定された値を使用
-        """
-        if self.tokenizer is not None:
-            try:
-                # まず最も確実な方法で取得を試みる
-                # 1. vocab_sizeプロパティ（最も一般的）
-                if hasattr(self.tokenizer, 'vocab_size'):
-                    return self.tokenizer.vocab_size
-                
-                # 2. vocabディクショナリ
-                elif hasattr(self.tokenizer, 'vocab') and isinstance(self.tokenizer.vocab, dict):
-                    return len(self.tokenizer.vocab)
-                
-                # 3. SPのget_piece_sizeメソッド
-                elif hasattr(self.tokenizer, 'sp') and hasattr(self.tokenizer.sp, 'get_piece_size'):
-                    try:
-                        return self.tokenizer.sp.get_piece_size()
-                    except Exception as e:
-                        print(f"警告: get_piece_sizeの呼び出しに失敗しました: {e}")
-                
-                # 4. _tokenizerの確認 (SPEmulatorラッパー用)
-                elif hasattr(self.tokenizer, '_tokenizer'):
-                    if hasattr(self.tokenizer._tokenizer, 'vocab_size'):
-                        return self.tokenizer._tokenizer.vocab_size
-                    elif hasattr(self.tokenizer._tokenizer, 'vocab'):
-                        return len(self.tokenizer._tokenizer.vocab)
-                
-                # 5. コード内にハードコードされた値を使用（最後の手段）
-                print("警告: トークナイザーから語彙サイズを取得できません。デフォルト値を使用します。")
-                return 32000  # 一般的なT5モデルの語彙サイズ
-                
-            except Exception as e:
-                print(f"警告: トークナイザーから語彙サイズの取得に失敗しました: {e}")
-                if self._vocab_size is not None:
-                    print(f"初期化時に指定された語彙サイズ {self._vocab_size} を使用します")
-                    return self._vocab_size
-                else:
-                    print("デフォルト値 32000 を使用します")
-                    return 32000  # 安全のためのデフォルト値
-        
-        if self._vocab_size is None:
-            print("警告: vocab_sizeが設定されておらず、トークナイザーも設定されていません。デフォルト値 32000 を使用します")
-            return 32000  # 安全のためのデフォルト値
-        
         return self._vocab_size
+    
+    @vocab_size.setter
+    def vocab_size(self, value: int) -> None:
+        """語彙サイズのセッターを追加"""
+        self._vocab_size = value
+    
+    @property
+    def max_seq_len(self) -> int:
+        return self._max_seq_len
+    
+    @property
+    def dropout_prob(self) -> float:
+        return self._dropout_prob
+    
+    @property
+    def use_rope(self) -> bool:
+        return self._use_rope
+    
+    @property
+    def use_wavelet(self) -> bool:
+        return self._use_wavelet
+    
+    @property
+    def wavelet_name(self) -> str:
+        return self._wavelet_name
+    
+    @property
+    def activation(self) -> str:
+        return self._activation
+    
+    @property
+    def use_bio_noise(self) -> bool:
+        return self._use_bio_noise
+    
+    @property
+    def noise_std(self) -> float:
+        return self._noise_std
+    
+    @property
+    def tokenizer(self):
+        """トークナイザーを取得"""
+        return self._tokenizer
     
     def set_tokenizer(self, tokenizer) -> None:
         """
         トークナイザーを設定し、語彙サイズを自動的に取得できるようにする
         """
-        self.tokenizer = tokenizer
+        self._tokenizer = tokenizer
         
 class TrainingConfig:
     """

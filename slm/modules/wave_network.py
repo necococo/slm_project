@@ -314,7 +314,7 @@ class WaveletEnhancedWaveLayer(nn.Module):
             output = self.norm(output)
             
             # 最終出力の安全性確認
-            if torch.isnan(output).any():
+            if torch.isnan(output).any()):
                 output = torch.nan_to_num(output, nan=0.0)
             
             return output
@@ -463,8 +463,17 @@ class WaveNetworkLM(nn.Module):
                 if config.tokenizer.mask_token_id >= config.vocab_size:
                     print(f"警告: マスクトークンID ({config.tokenizer.mask_token_id}) が語彙サイズ ({config.vocab_size}) を超えています")
                     old_vocab_size = config.vocab_size
-                    config.vocab_size = config.tokenizer.mask_token_id + 1
-                    print(f"既存モデルとの互換性を維持するため、vocab_sizeを {old_vocab_size} から {config.vocab_size} に拡張しました")
+                    try:
+                        # セッターを使用して値を設定
+                        config.vocab_size = config.tokenizer.mask_token_id + 1
+                        print(f"既存モデルとの互換性を維持するため、vocab_sizeを {old_vocab_size} から {config.vocab_size} に拡張しました")
+                    except AttributeError:
+                        # セッターがない場合のフォールバック対応
+                        print(f"警告: ModelConfigオブジェクトにvocab_sizeのセッターが見つかりません")
+                        print(f"デフォルトの語彙サイズ ({config.vocab_size}) を使用します")
+                        # マスクトークンIDが語彙サイズを超えていることを警告だけして続行
+                        print(f"注意: mask_token_id ({config.tokenizer.mask_token_id}) が vocab_size を超えています")
+                        print(f"学習時にエラーが発生する可能性があります")
         
         vocab_size = config.vocab_size
         hidden_size = config.hidden_size
