@@ -357,7 +357,7 @@ class Trainer:
                 sample_batch = next(iter(dataloader))
                 
                 # モデルのトークナイザー情報を取得
-                tokenizer = self.model.config.tokenizer if hasattr(self.model.config, 'tokenizer') else None
+                tokenizer = self.model.config.tokenizerもしもし if hasattr(self.model.config, 'tokenizer') else None
                 
                 if tokenizer is not None:
                     # マスクトークンの確認
@@ -635,6 +635,9 @@ class Trainer:
     def validate(self) -> float:
         """
         Acceleratorを使用した検証メソッド
+        
+        Returns:
+            float: 検証データセットに対する平均損失。エラー発生時は100.0を返す。
         """
         if not self.valid_dataset:
             return 0.0
@@ -647,105 +650,156 @@ class Trainer:
         # 検証用のバッチサイズ
         eval_batch_size = 8
         
-        # カスタムコレータの取得
-        tokenizer = self.model.config.tokenizer
-        collator = CustomCollator(
-            tokenizer=tokenizer,
-            model_config=self.model.config,
-            mlm=True,
-            mlm_probability=self.training_config.mlm_probability,
-            mask_token_id=tokenizer.mask_token_id,
-            qa=False
-        )
-        
-        # DataLoaderを作成し、Acceleratorで準備
-        dataloader = DataLoader(
-            self.valid_dataset,
-            batch_size=eval_batch_size, 
-            shuffle=False,
-            collate_fn=collator,
-            num_workers=4,
-            pin_memory=True  # データ転送を高速化
-        )
-        dataloader = self.accelerator.prepare(dataloader)
-        
-        total_loss = 0.0
-        total_batches = min(10, len(dataloader))  # 最大10バッチに制限
-        
-        # tqdmのプログレスバー
-        from tqdm.auto import tqdm
-        progress_bar = tqdm(
-            dataloader, 
-            desc="Validation", 
-            total=total_batches, 
-            disable=not is_main_process,
-            leave=False
-        )
-        
-        with torch.no_grad():
-            for i, batch in enumerate(progress_bar):
-                # 最大10バッチまでで終了
-                if i >= total_batches:
-                    break
+        try:
+            # カスタムコレータの取得
+            tokenizer = self.model.config.tokenizer
+            collator = CustomCollator(
+                tokenizer=tokenizer,
+                model_config=self.model.config,
+                mlm=True,
+                mlm_probability=self.training_config.mlm_probability,
+                mask_token_id=tokenizer.mask_token_id,
+                qa=False
+            )
+            
+            # DataLoaderを作成し、Acceleratorで準備
+            dataloader = DataLoader(
+                self.valid_dataset,
+                batch_size=eval_batch_size, 
+                shuffle=False,
+                collate_fn=collator,
+                num_workers=4,
+                pin_memory=True
+            )
+            dataloader = self.accelerator.prepare(dataloader)
+            
+            total_loss = 0.0
+            total_batches = min(10, len(dataloader))  # 最大10バッチに制限
+            
+            # tqdmのプログレスバー
+            from tqdm.auto import tqdm
+            progress_bar = tqdm(
+                dataloader, 
+                desc="Validation", 
+                total=total_batches, 
+                disable=not is_main_process,
+                leave=False
+            )
+            
+            if is_main_process:
+                print(f"バリデーション開始 (最大{total_batches}バッチ)")
+            
+            with torch.no_grad():
+                for i, batch in enumerate(progress_bar):
+                    # 最大10バッチまでで終了
+                    if i >= total_batches:
+                        break
+                    
+                    try:
+                        # バッチ内のテンソルサイズを安全にチェック
+                        if not all(key in batch for key in ["input_ids", "labels"]):
+                            if is_main_process:
+                                print(f"バッチ {i} に必要なキー(input_ids, labels)が含まれていません")
+                            continue
+                            
+                        input_ids = batch["input_ids"]
+                        labels = batch["labels"]
+                        
+                        # 不正な値やNaNをチェック
+                        if torch.isnan(input_ids).any() or torch.isnan(labels).any():
+                            if is_main_process:
+                                print(f"バッチ {i} にNaN値が含まれています - スキップします")
+                            continue
+                            
+                        # 範囲外のインデックスチェック
+                        vocab_size = self.model.get_classifier_weights().size(0)
+                        if labels.max() >= vocab_size:
+                            if is_main_process:
+                                print(f"バッチ {i} に語彙サイズ外のインデックス値があります: max={labels.max().item()}, vocab_size={vocab_size}")
+                                # 不正なインデックスをマスク処理
+                                labels = torch.where(labels < vocab_size, labels, -100)
+                        
+                        # Cut Cross Entropyを優先的に使用
+                        with self.accelerator.autocast():
+                            embeddings = self.model(input_ids)
+                            classifier = self.model.get_classifier_weights()
+                            
+                            # デバイスによって適切な精度に変換
+                            if input_ids.device.type == "cuda":
+                                embeddings = embeddings.half()  # CUDA用にfloat16
+                                classifier = classifier.half()
+                            elif hasattr(torch, 'bfloat16') and self.accelerator.device.type == "xla":
+                                embeddings = embeddings.to(torch.bfloat16)  # TPU用にbfloat16
+                                classifier = classifier.to(torch.bfloat16)
+                            
+                            # tritonドライバーエラーを避けるためにtry-exceptで囲む
+                            try:
+                                # cut_cross_entropyモジュールを使用
+                                from cut_cross_entropy import linear_cross_entropy
+                                loss = linear_cross_entropy(embeddings, classifier, labels)
+                            except RuntimeError as e:
+                                if "active drivers" in str(e) or "device-side assert" in str(e):
+                                    # Tritonエラーの場合、一時的なフォールバック
+                                    if is_main_process:
+                                        print("WARNING: 特殊エラー発生、標準のcross_entropyにフォールバック")
+                                    # 標準の実装にフォールバック
+                                    logits = torch.matmul(embeddings, classifier.t())
+                                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
+                                else:
+                                    raise e
+                        
+                        # 各プロセスで独立して損失を蓄積
+                        total_loss += loss.item()
+                        
+                        # プログレスバーに現在の損失を表示
+                        if is_main_process:
+                            progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+                            
+                    except Exception as e:
+                        if is_main_process:
+                            import traceback
+                            print(f"バリデーションのバッチ {i} でエラー発生: {str(e)}")
+                            traceback.print_exc()
+                        if i == 0:
+                            # 最初のバッチでエラーが発生した場合、高い損失を返す
+                            return 100.0
+                        # 他のバッチは続行
+                        continue
                 
-                # Acceleratorはbatchを既にデバイスに配置済み
-                input_ids = batch["input_ids"]
-                labels = batch["labels"]
-                
+                # 処理したバッチ数で割る
+                processed_batches = min(i + 1, total_batches)
+                if processed_batches <= 0:  # すべてのバッチでエラーが発生した場合
+                    return 100.0
+                    
+                local_avg_loss = total_loss / processed_batches
+            
+            # 全プロセスで平均損失を集約
+            try:
+                avg_loss_tensor = torch.tensor([local_avg_loss], device=self.accelerator.device)
+                gathered_loss = self.accelerator.gather(avg_loss_tensor)
+                avg_loss = gathered_loss.mean().item()
+            except Exception as e:
+                if is_main_process:
+                    print(f"損失の集約でエラー発生: {e}")
+                avg_loss = local_avg_loss  # フォールバック: ローカルの損失を使用
+            
+            # メインプロセスのみ出力
+            if is_main_process:
                 try:
-                    # Cut Cross Entropyを優先的に使用
-                    with self.accelerator.autocast():
-                        embeddings = self.model(input_ids)
-                        classifier = self.model.get_classifier_weights()
-                        
-                        # cudaの場合はfloat16に変換
-                        if input_ids.is_cuda:
-                            embeddings = embeddings.half()
-                            classifier = classifier.half()
-                        
-                        # tritonドライバーエラーを避けるためにtry-exceptで囲む
-                        try:
-                            # cut_cross_entropyモジュールを使用
-                            loss = linear_cross_entropy(embeddings, classifier, labels)
-                        except RuntimeError as e:
-                            if "active drivers" in str(e):
-                                # Tritonエラーの場合、一時的なフォールバック
-                                print("WARNING: Validationでのトライトンエラー、フォールバック処理を実行")
-                                logits = torch.matmul(embeddings, classifier.t())
-                                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
-                            else:
-                                raise e
-                    
-                    # 各プロセスで独立して損失を蓄積
-                    total_loss += loss.item()
-                    
-                    # プログレスバーに現在の損失を表示
-                    if is_main_process:
-                        progress_bar.set_postfix(loss=f"{loss.item():.4f}")
-                        
+                    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+                    print(f"Validation Loss: {avg_loss:.4f} [Perplexity: {perplexity:.2f}] (using {processed_batches} batches)")
                 except Exception as e:
-                    if is_main_process:
-                        print(f"WARNING: Error during validation: {str(e)}")
-                    if i == 0:
-                        # 最初のバッチでエラーが発生した場合、高い損失を返す
-                        return 100.0
-                    break
-        
-        # 処理したバッチ数で割る
-        processed_batches = min(i + 1, total_batches)
-        local_avg_loss = total_loss / processed_batches if processed_batches > 0 else 100.0
-        
-        # 全プロセスで平均損失を集約
-        avg_loss_tensor = torch.tensor([local_avg_loss], device=self.accelerator.device)
-        gathered_loss = self.accelerator.gather(avg_loss_tensor)
-        avg_loss = gathered_loss.mean().item()
-        
-        # メインプロセスのみ出力
-        if is_main_process:
-            perplexity = torch.exp(torch.tensor(avg_loss)).item()
-            print(f"Validation Loss: {avg_loss:.4f} [Perplexity: {perplexity:.2f}] (using {processed_batches} batches)")
-        
-        return avg_loss
+                    print(f"パープレキシティ計算でエラー: {e}")
+            
+            return avg_loss
+            
+        except Exception as e:
+            # validate全体でエラーが発生した場合
+            if is_main_process:
+                import traceback
+                print(f"バリデーション実行中に重大なエラー発生: {str(e)}")
+                traceback.print_exc()
+            return 100.0
 
     def save_checkpoint(self, name: str, current_epoch: int = None, current_step: int = None, val_loss: float = None) -> None:
         """
@@ -760,34 +814,119 @@ class Trainer:
         """
         # メインプロセスのみが保存する
         if self.accelerator.is_main_process:
-            # チェックポイントパス
-            checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
-            
-            # 学習情報も含めたチェックポイント辞書を作成
-            checkpoint = {
-                "model_config": self.model.config,
-                "training_config": self.training_config,
-                "epoch": current_epoch,
-                "step": current_step,
-                "val_loss": val_loss,
-                "datetime": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            
-            # Accelerator経由でモデルを抽出して保存
-            # unwrap_model()でDistributedDataParallelなどからモデルを取り出す
-            unwrapped_model = self.accelerator.unwrap_model(self.model)
-            checkpoint["model_state_dict"] = unwrapped_model.state_dict()
-            
-            # オプティマイザは保存しないことも可能（TPU環境では省略することもある）
-            # 保存する場合はAcceleratorから取り出して保存
-            checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
-            
-            # 保存
-            torch.save(checkpoint, checkpoint_path)
-            print(f"Checkpoint saved to {checkpoint_path}")
-            
+            try:
+                # チェックポイントパス
+                checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
+                
+                # 学習情報も含めたチェックポイント辞書を作成
+                checkpoint = {
+                    "model_config": self.model.config,
+                    "training_config": self.training_config,
+                    "epoch": current_epoch,
+                    "step": current_step,
+                    "val_loss": val_loss,
+                    "datetime": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                
+                # Accelerator経由でモデルを抽出して保存
+                # unwrap_model()でDistributedDataParallelなどからモデルを取り出す
+                try:
+                    unwrapped_model = self.accelerator.unwrap_model(self.model)
+                    
+                    # まずCPUに移動する処理を安全に行う
+                    try:
+                        model_state_dict = {
+                            k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
+                            for k, v in unwrapped_model.state_dict().items()
+                        }
+                        checkpoint["model_state_dict"] = model_state_dict
+                    except RuntimeError as e:
+                        if "device-side assert" in str(e) or "CUDA" in str(e):
+                            print(f"CUDAエラーが発生しましたが、パラメータを一つずつCPUに移動して再試行します: {e}")
+                            # テンソルごとに個別に移動を試みる
+                            model_state_dict = {}
+                            for k, v in unwrapped_model.state_dict().items():
+                                try:
+                                    if isinstance(v, torch.Tensor):
+                                        model_state_dict[k] = v.detach().cpu()
+                                    else:
+                                        model_state_dict[k] = v
+                                except Exception:
+                                    # 個別のテンソルで失敗した場合、そのテンソルはスキップ
+                                    print(f"警告: パラメータ {k} のCPU移動に失敗しました。スキップします。")
+                            checkpoint["model_state_dict"] = model_state_dict
+                        else:
+                            raise e
+                            
+                except Exception as e:
+                    print(f"モデル状態の抽出中にエラー: {e}")
+                    # 最小限のチェックポイントとして続行
+                    checkpoint["model_state_dict_error"] = str(e)
+                
+                # オプティマイザの状態を安全に保存
+                try:
+                    optimizer_state = self.optimizer.state_dict()
+                    # パラメーターの'state'部分だけCPUに移動
+                    if 'state' in optimizer_state:
+                        cpu_state = {}
+                        for param_id, param_state in optimizer_state['state'].items():
+                            cpu_param_state = {}
+                            for k, v in param_state.items():
+                                if isinstance(v, torch.Tensor):
+                                    try:
+                                        cpu_param_state[k] = v.detach().cpu()
+                                    except Exception:
+                                        print(f"警告: オプティマイザのテンソル {k} のCPU移動に失敗しました。スキップします。")
+                                else:
+                                    cpu_param_state[k] = v
+                            cpu_state[param_id] = cpu_param_state
+                        optimizer_state['state'] = cpu_state
+                    checkpoint["optimizer_state_dict"] = optimizer_state
+                except Exception as e:
+                    print(f"オプティマイザ状態の抽出中にエラー: {e}")
+                    # オプティマイザ状態を保存せずに続行
+                    checkpoint["optimizer_state_dict_error"] = str(e)
+                
+                # 保存とバックアップ
+                try:
+                    # まずバックアップファイル名を作成
+                    backup_path = os.path.join(self.checkpoint_dir, f"{name}_backup.pt")
+                    
+                    # チェックポイントを保存
+                    torch.save(checkpoint, checkpoint_path)
+                    print(f"Checkpoint saved to {checkpoint_path}")
+                    
+                except Exception as e:
+                    print(f"チェックポイント保存中にエラー: {e}")
+                    
+                    # メタデータだけでも保存を試みる
+                    try:
+                        meta_checkpoint = {
+                            "model_config": self.model.config,
+                            "training_config": self.training_config,
+                            "epoch": current_epoch,
+                            "step": current_step,
+                            "val_loss": val_loss,
+                            "datetime": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "save_error": str(e)
+                        }
+                        meta_path = os.path.join(self.checkpoint_dir, f"{name}_meta_only.pt")
+                        torch.save(meta_checkpoint, meta_path)
+                        print(f"メタデータのみのチェックポイントを保存: {meta_path}")
+                    except Exception as e2:
+                        print(f"メタデータ保存中にもエラー: {e2}")
+                
+            except Exception as e:
+                import traceback
+                print(f"チェックポイント保存プロセス全体でエラー: {e}")
+                traceback.print_exc()
+        
         # 全プロセスが同期するのを待つ
-        self.accelerator.wait_for_everyone()
+        try:
+            self.accelerator.wait_for_everyone()
+        except Exception as e:
+            print(f"プロセス同期中にエラー: {e}")
+            # 同期エラーは無視して続行
 
     def load_checkpoint(self, path: str) -> tuple[int, int]:
         """
