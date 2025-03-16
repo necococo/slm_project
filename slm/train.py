@@ -357,7 +357,7 @@ class Trainer:
                 sample_batch = next(iter(dataloader))
                 
                 # モデルのトークナイザー情報を取得
-                tokenizer = self.model.config.tokenizerもしもし if hasattr(self.model.config, 'tokenizer') else None
+                tokenizer = self.model.config.tokenizer if hasattr(self.model.config, 'tokenizer') else None
                 
                 if tokenizer is not None:
                     # マスクトークンの確認
