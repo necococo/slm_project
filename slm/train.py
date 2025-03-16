@@ -290,7 +290,17 @@ class Trainer:
         if hasattr(self.model.config, 'tokenizer') and self.model.config.tokenizer is not None:
             if hasattr(self.model.config.tokenizer, 'mask_token_id'):
                 mask_token_id = self.model.config.tokenizer.mask_token_id
-            
+        
+        # 重要: マスクトークンIDが語彙サイズを超えていないか確認
+        if mask_token_id >= vocab_size:
+            print(f"警告: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています。")
+            print(f"マスクトークンIDを語彙サイズ-1 ({vocab_size-1}) に調整します。")
+            mask_token_id = vocab_size - 1
+            # トークナイザーの設定も更新（可能な場合）
+            if hasattr(self.model.config, 'tokenizer') and self.model.config.tokenizer is not None:
+                if hasattr(self.model.config.tokenizer, 'mask_token_id'):
+                    self.model.config.tokenizer.mask_token_id = mask_token_id
+        
         # diffuserもacceleratorで準備
         diffuser = SimpleTextDiffusion(
             timesteps=10,  # タイムステップを減らして計算効率を向上
@@ -358,7 +368,7 @@ class Trainer:
                 
                 # モデルのトークナイザー情報を取得
                 tokenizer = self.model.config.tokenizer if hasattr(self.model.config, 'tokenizer') else None
-                
+
                 if tokenizer is not None:
                     # マスクトークンの確認
                     print(f"マスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
@@ -568,6 +578,16 @@ class Trainer:
             input_ids = batch["tokens"]
         else:
             raise ValueError("バッチにinput_idsまたはtokensキーが存在しません")
+        
+        # 語彙サイズを取得
+        vocab_size = self.model.get_classifier_weights().size(0)
+        
+        # 範囲外のインデックスチェック（CUDAエラー防止）
+        if (input_ids >= vocab_size).any():
+            # 無効なトークンをすべて0（PAD）に置換
+            input_ids = torch.where(input_ids < vocab_size, input_ids, torch.tensor(0, device=input_ids.device))
+            if self.accelerator.is_main_process and step % 10 == 0:
+                print(f"警告: 語彙サイズを超えるトークンを検出し、PADに置換しました。")
             
         # ラベルの処理
         if "labels" in batch:
@@ -577,6 +597,13 @@ class Trainer:
             # タイムステップをテンソルに変換してデバイスに配置
             t_tensor = torch.tensor([t], device=self.accelerator.device)
             noisy_tokens, labels = diffuser(input_ids.clone(), t_tensor)
+        
+        # ラベルの範囲チェック
+        if (labels >= vocab_size).any():
+            # 不正なインデックスを-100に置換（CrossEntropyの無視インデックス）
+            labels = torch.where(labels < vocab_size, labels, torch.tensor(-100, device=labels.device))
+            if self.accelerator.is_main_process and step % 10 == 0:
+                print(f"警告: ラベルに語彙サイズを超える値があり、-100に置換しました。")
         
         # オプティマイザのゼロ勾配（Acceleratorが管理）
         self.optimizer.zero_grad()
@@ -653,12 +680,28 @@ class Trainer:
         try:
             # カスタムコレータの取得
             tokenizer = self.model.config.tokenizer
+            # 語彙サイズを取得
+            vocab_size = self.model.get_classifier_weights().size(0)
+            
+            # マスクトークンIDをチェック
+            mask_token_id = 4  # デフォルト値
+            if tokenizer is not None and hasattr(tokenizer, 'mask_token_id'):
+                mask_token_id = tokenizer.mask_token_id
+                
+                # マスクトークンIDが語彙サイズを超えていないか確認
+                if mask_token_id >= vocab_size:
+                    print(f"警告: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています。")
+                    print(f"マスクトークンIDを語彙サイズ-1 ({vocab_size-1}) に調整します。")
+                    mask_token_id = vocab_size - 1
+                    # トークナイザーの設定も更新
+                    tokenizer.mask_token_id = mask_token_id
+            
             collator = CustomCollator(
                 tokenizer=tokenizer,
                 model_config=self.model.config,
                 mlm=True,
                 mlm_probability=self.training_config.mlm_probability,
-                mask_token_id=tokenizer.mask_token_id,
+                mask_token_id=mask_token_id,
                 qa=False
             )
             
@@ -711,13 +754,27 @@ class Trainer:
                                 print(f"バッチ {i} にNaN値が含まれています - スキップします")
                             continue
                             
-                        # 範囲外のインデックスチェック
+                        # 範囲外のインデックスチェック - 重要
                         vocab_size = self.model.get_classifier_weights().size(0)
-                        if labels.max() >= vocab_size:
+                        if (labels >= vocab_size).any():
                             if is_main_process:
-                                print(f"バッチ {i} に語彙サイズ外のインデックス値があります: max={labels.max().item()}, vocab_size={vocab_size}")
-                                # 不正なインデックスをマスク処理
-                                labels = torch.where(labels < vocab_size, labels, -100)
+                                invalid_mask = labels >= vocab_size
+                                max_invalid = labels[invalid_mask].max().item() if invalid_mask.any() else -1
+                                print(f"バッチ {i} に語彙サイズ外のインデックス値があります: max={max_invalid}, vocab_size={vocab_size}")
+                                print(f"無効なインデックスの数: {invalid_mask.sum().item()} / {labels.numel()}")
+                            
+                            # 不正なインデックスを-100に置換（CrossEntropyの無視インデックス）
+                            labels = torch.where(labels < vocab_size, labels, torch.tensor(-100, device=labels.device))
+                        
+                        # 同様にinput_idsもチェック
+                        if (input_ids >= vocab_size).any():
+                            if is_main_process:
+                                invalid_mask = input_ids >= vocab_size
+                                max_invalid = input_ids[invalid_mask].max().item() if invalid_mask.any() else -1
+                                print(f"バッチ {i} のinput_idsに語彙サイズ外のインデックスがあります: max={max_invalid}")
+                                
+                                # 無効なトークンをすべて0（PAD）に置換
+                                input_ids = torch.where(input_ids < vocab_size, input_ids, torch.tensor(0, device=input_ids.device))
                         
                         # Cut Cross Entropyを優先的に使用
                         with self.accelerator.autocast():
@@ -817,6 +874,7 @@ class Trainer:
             try:
                 # チェックポイントパス
                 checkpoint_path = os.path.join(self.checkpoint_dir, f"{name}.pt")
+                backup_path = os.path.join(self.checkpoint_dir, f"{name}_backup.pt")
                 
                 # 学習情報も含めたチェックポイント辞書を作成
                 checkpoint = {
@@ -833,8 +891,20 @@ class Trainer:
                 try:
                     unwrapped_model = self.accelerator.unwrap_model(self.model)
                     
-                    # まずCPUに移動する処理を安全に行う
+                    # CUDA device-side assertエラーが発生する可能性があるため、
+                    # まずモデル全体をCPUに移動する前にエラーをチェック
                     try:
+                        # テスト用にランダムな入力を生成し、モデルが正常かチェック
+                        if hasattr(unwrapped_model, 'config') and hasattr(unwrapped_model.config, 'seq_length'):
+                            seq_len = unwrapped_model.config.seq_length
+                            test_input = torch.randint(0, 10, (1, seq_len), 
+                                                      device=self.device)
+                            # 推論モードで短い入力を試す
+                            unwrapped_model.eval()
+                            with torch.no_grad():
+                                _ = unwrapped_model(test_input[:, :min(10, seq_len)])
+                        
+                        # テストが成功したら通常通りCPUに移動
                         model_state_dict = {
                             k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
                             for k, v in unwrapped_model.state_dict().items()
@@ -842,19 +912,41 @@ class Trainer:
                         checkpoint["model_state_dict"] = model_state_dict
                     except RuntimeError as e:
                         if "device-side assert" in str(e) or "CUDA" in str(e):
-                            print(f"CUDAエラーが発生しましたが、パラメータを一つずつCPUに移動して再試行します: {e}")
+                            print(f"CUDAエラーが発生したため、パラメータごとに個別にCPUに移動します: {e}")
                             # テンソルごとに個別に移動を試みる
                             model_state_dict = {}
                             for k, v in unwrapped_model.state_dict().items():
                                 try:
                                     if isinstance(v, torch.Tensor):
+                                        # device-side assertが発生する可能性があるテンソルをスキップ
+                                        if v.requires_grad and v.grad is not None and torch.isnan(v.grad).any():
+                                            print(f"警告: パラメータ {k} に不正な勾配があります。スキップします。")
+                                            continue
                                         model_state_dict[k] = v.detach().cpu()
                                     else:
                                         model_state_dict[k] = v
-                                except Exception:
-                                    # 個別のテンソルで失敗した場合、そのテンソルはスキップ
+                                except Exception as tensor_err:
                                     print(f"警告: パラメータ {k} のCPU移動に失敗しました。スキップします。")
-                            checkpoint["model_state_dict"] = model_state_dict
+                                    # そのテンソルはスキップするが処理は続行
+                            
+                            # 重要なレイヤーの数を確認
+                            expected_layers = sum(1 for k in unwrapped_model.state_dict().keys() if 'layers.' in k)
+                            saved_layers = sum(1 for k in model_state_dict.keys() if 'layers.' in k)
+                            
+                            if saved_layers < expected_layers * 0.8:  # 80%以下しか保存できていない
+                                print(f"警告: モデルレイヤーの多くが保存できません ({saved_layers}/{expected_layers})。")
+                                
+                                # フォールバックとしてメタデータだけでも保存する準備
+                                if len(model_state_dict) > 0:
+                                    checkpoint["partial_model_state_dict"] = model_state_dict
+                                    checkpoint["model_state_dict_error"] = "一部のモデルパラメータのみ保存されています"
+                                else:
+                                    checkpoint["model_state_dict_error"] = "モデルパラメータを保存できませんでした"
+                            else:
+                                # 80%以上保存できていれば、通常のstate_dictとして保存
+                                checkpoint["model_state_dict"] = model_state_dict
+                                checkpoint["partial_save"] = True
+                                print(f"部分的なモデル状態を保存します: {saved_layers}/{expected_layers}レイヤー")
                         else:
                             raise e
                             
@@ -889,10 +981,14 @@ class Trainer:
                 
                 # 保存とバックアップ
                 try:
-                    # まずバックアップファイル名を作成
-                    backup_path = os.path.join(self.checkpoint_dir, f"{name}_backup.pt")
+                    # メインチェックポイントを保存する前にバックアップパスにも保存
+                    try:
+                        torch.save(checkpoint, backup_path)
+                        print(f"バックアップチェックポイントを保存: {backup_path}")
+                    except Exception as backup_err:
+                        print(f"バックアップ保存中にエラー: {backup_err}")
                     
-                    # チェックポイントを保存
+                    # 本来のチェックポイントを保存
                     torch.save(checkpoint, checkpoint_path)
                     print(f"Checkpoint saved to {checkpoint_path}")
                     
@@ -1005,36 +1101,13 @@ class Trainer:
         if "step" in checkpoint and checkpoint["step"] is not None:
             start_step = checkpoint["step"]
         
-        # ファイル名からのエポック/ステップ情報抽出（メタデータがない場合のバックアップ）
-        if start_epoch == 0:
-            # diffusion_epoch_X パターンをチェック
-            epoch_match = re.search(r'diffusion_epoch_(\d+)', path)
-            if epoch_match:
-                start_epoch = int(epoch_match.group(1))
-        
-        if start_step == 0:
-            # diffusion_step_X パターンをチェック
-            step_match = re.search(r'diffusion_step_(\d+)', path)
-            if step_match:
-                start_step = int(step_match.group(1))
-                
-                # エポックが取得できていない場合は、ステップからエポックを推定
-                if start_epoch == 0:
-                    # おおよそのバッチサイズとデータセットサイズからエポックを推定
-                    batch_size = getattr(self.training_config, 'batch_size', 8)
-                    dataset_size = len(self.train_dataset) if self.train_dataset else 1000
-                    approx_steps_per_epoch = max(1, dataset_size // batch_size)
-                    start_epoch = start_step // approx_steps_per_epoch
-                    if self.accelerator.is_main_process:
-                        print(f"ステップ {start_step} からエポックを推定: {start_epoch}")
-        
         # メインプロセスのみが出力
         if self.accelerator.is_main_process:
             print(f"チェックポイント {path} を読み込みました")
             print(f"次のエポック: {start_epoch + 1}, 開始ステップ: {start_step}")
         
         # 全プロセスが同期するのを待つ
-        self.accelerator.wait_for_everyone()
+        self.accelerator.wait_forEveryone()
         
         # エポック番号とステップ数のタプルを返す
         return start_epoch, start_step
@@ -1048,4 +1121,4 @@ class Trainer:
             print("TensorBoard writer closed and resources released")
             
         # 全プロセスが同期するのを待つ
-        self.accelerator.wait_for_everyone()
+        self.accelerator.wait_forEveryone()

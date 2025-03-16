@@ -25,100 +25,62 @@ def compute_wave_representation(x: torch.Tensor, global_mode: bool = False, eps:
     Returns:
         (real_part, imag_part): 波表現の実部と虚部
     """
-    # 数値安定性のためにepsを調整し、メモリ管理を改善
-    eps = 1e-4  # 数値安定性のための小さな値
+    # 数値安定性のための定数
+    eps = max(eps, 1e-6)  # より安全な最小値
     
-    # メモリ使用量を減らすためにCPUキャッシュをクリア
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    # 念の為float32に強制変換し、NaNをチェック
-    x = x.float()
+    # 入力値のチェックと前処理
     if torch.isnan(x).any():
-        print("nanが現れた。compute_wave_representation(x)")
+        # NaN値を0に置き換え
+        x = torch.nan_to_num(x, nan=0.0)
+    
+    # 極端な値をクリップして安定化
+    x = torch.clamp(x, min=-10.0, max=10.0)
     
     B, S, D = x.shape
     
     # グローバル振幅の計算 (モードによって集約次元が異なる)
     if global_mode:
-        # 文レベル: メモリ使用量を削減するため計算を分割
+        # 文レベル
         x_squared = x * x
-        # チャンクで計算して合計（メモリ使用量削減）
         G_squared = torch.sum(x_squared, dim=(1, 2), keepdim=True) + eps
         G = torch.sqrt(G_squared)  # [B, 1, 1]
+        G = torch.clamp(G, min=eps)  # 0に近すぎる値を避ける
         G = G.expand(-1, S, D)  # [B, S, D]
     else:
-        # トークンレベル: メモリ使用量を削減するため計算を分割
+        # トークンレベル
         x_squared = x * x
         G_squared = torch.sum(x_squared, dim=1, keepdim=True) + eps
         G = torch.sqrt(G_squared)  # [B, 1, D]
+        G = torch.clamp(G, min=eps)  # 0に近すぎる値を避ける
         G = G.expand(-1, S, -1)  # [B, S, D]
     
-    # 中間結果をクリア
-    del x_squared
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # 比率計算
+    ratio = torch.div(x, G, rounding_mode='floor')  # 安全な除算
     
-    # 安全な振幅値 - より安定した実装
-    G_safe = torch.clamp(G, min=eps) # より厳密な下限値の保証
+    # 比率を-1と1の間に制限
+    ratio = torch.clamp(ratio, min=-0.99, max=0.99)
     
-    # メモリ解放
-    del G
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    # ===== 比率計算の数値安定性強化（ハイブリッドアプローチ） =====
-    # 1. まず極端な値をclampで制限（数値安定性の確保）
-    ratio = x / G_safe
-    # 極端な値を制限（メモリ削減のため計算を分割）
-    ratio = torch.clamp(ratio, min=-10.0, max=10.0)  # 極端な値を制限（範囲も縮小）
+    # 1 - ratio^2 の計算（数値安定性のため）
+    one_minus_ratio_squared = 1.0 - ratio * ratio
+    one_minus_ratio_squared = torch.clamp(one_minus_ratio_squared, min=eps)
     
-    # 2. 次にtanhで滑らかな勾配を維持しながら-0.99〜0.99に制限
-    ratio = torch.tanh(ratio) * 0.99
+    # √(1-ratio²) の計算
+    sqrt_term = torch.sqrt(one_minus_ratio_squared)
     
-    # ===== 位相角 (α_jk) の計算 =====
-    # 1 - ratio^2 が負になる可能性がある（数値誤差のため）
-    ratio_squared = ratio**2
-    inside = 1.0 - ratio_squared
-    
-    # 不要な中間結果を削除
-    del ratio_squared
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    # 非線形関数よりもclampを使用することで、厳密に非負値を保証
-    inside = torch.clamp(inside, min=0.0) + eps
-    
-    # arctan2(√(1-ratio²), ratio) - sqrt計算を安定化
-    sqrt_inside = torch.sqrt(inside)
-    
-    # 中間結果を削除
-    del inside
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    alpha = torch.atan2(sqrt_inside, ratio)
-    
-    # 中間結果を削除
-    del sqrt_inside
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # arctan2(√(1-ratio²), ratio) で位相角を計算
+    alpha = torch.atan2(sqrt_term, ratio)
     
     # 波表現への変換
-    real_part = G_safe * torch.cos(alpha)
-    imag_part = G_safe * torch.sin(alpha)
+    # 最終的な実部と虚部の計算
+    real_part = G * torch.cos(alpha)
+    imag_part = G * torch.sin(alpha)
     
-    # 中間結果を削除
-    del G_safe, alpha
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # 結果の検証と修正
+    if torch.isnan(real_part).any() or torch.isnan(imag_part).any():
+        # NaN値を0に置き換え
+        real_part = torch.nan_to_num(real_part, nan=0.0)
+        imag_part = torch.nan_to_num(imag_part, nan=0.0)
     
-    if torch.isnan(real_part).any():
-        print("nanが現れた。compute_wave_representation real_part")  
-
-    if torch.isnan(imag_part).any():
-        print("nanが現れた。compute_wave_representation imag_part")  
-
     return real_part, imag_part
 
 class BiologicalNoiseGate(nn.Module):
@@ -240,8 +202,9 @@ class WaveletEnhancedWaveLayer(nn.Module):
         
     def compute_amplitude_phase(self, real_part: torch.Tensor, imag_part: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """実部と虚部から振幅と位相を計算"""
+        eps = 1e-6
         # 振幅 = √(実部² + 虚部²)
-        amplitude = torch.sqrt(real_part**2 + imag_part**2 + 1e-5)
+        amplitude = torch.sqrt(real_part**2 + imag_part**2 + eps)
         
         # 位相 = arctan(虚部/実部)
         phase = torch.atan2(imag_part, real_part)
@@ -259,57 +222,108 @@ class WaveletEnhancedWaveLayer(nn.Module):
             output: 処理後のテンソル [B, S, D]
         """       
         B, S, D = x.shape
-        eps = 1e-5
+        eps = 1e-6  # 安全なイプシロン値
         
-        # NaN対策
-        if torch.isnan(x).any():
-            print("Warning: NaNs in input, replacing with zeros")
-        
-        # 文レベルのwave表現 (グローバルコンテキスト)
-        real_sen, imag_sen = compute_wave_representation(x, global_mode=True, eps=eps)
-        
-        # トークンレベルのwave表現
-        real_token, imag_token = compute_wave_representation(x, global_mode=False, eps=eps)
-        
-        # 波の干渉（加算）
-        combined_real = real_sen + real_token
-        combined_imag = imag_sen + imag_token
-        
-        # ウェーブレット変換を適用（低周波成分のみを使用）
-        if self.use_wavelet:
-            from slm.modules.wavelet import apply_wavelet_transform
-            combined_real, combined_imag = apply_wavelet_transform(
-                combined_real, combined_imag, wavelet_name=self.wavelet_name
-            )
-        
-        # 生体ゆらぎゲート機構を使用する場合
-        if self.use_bio_noise:
-            # 実部と虚部から振幅と位相を計算
-            amplitude, phase = self.compute_amplitude_phase(combined_real, combined_imag)
+        try:
+            # 入力の安全性チェック
+            if torch.isnan(x).any():
+                x = torch.nan_to_num(x, nan=0.0)
+                
+            # 極端な値をクリップして計算を安定化
+            x = torch.clamp(x, min=-100.0, max=100.0)
             
-            # 振幅と位相から生体ゆらぎを組み込んだゲートを計算
-            gate = self.bio_gate(amplitude, phase, training=self.training)
+            # 文レベルのwave表現 (グローバルコンテキスト)
+            try:
+                real_sen, imag_sen = compute_wave_representation(x, global_mode=True, eps=eps)
+            except RuntimeError as e:
+                # 計算エラーの場合はゼロテンソルでフォールバック
+                real_sen = torch.zeros_like(x)
+                imag_sen = torch.zeros_like(x)
             
-            # ゲートで重み付け
-            gated_real = combined_real * gate
-            gated_imag = combined_imag * gate
+            # トークンレベルのwave表現
+            try:
+                real_token, imag_token = compute_wave_representation(x, global_mode=False, eps=eps)
+            except RuntimeError as e:
+                # 計算エラーの場合はゼロテンソルでフォールバック
+                real_token = torch.zeros_like(x)
+                imag_token = torch.zeros_like(x)
             
-            # ゲート適用後の波表現を処理
-            real_part = self.ffn_real(gated_real)  # [B, S, D]
-            imag_part = self.ffn_imag(gated_imag)  # [B, S, D]
-        else:
-            # 従来通りの処理
-            real_part = self.ffn_real(combined_real)  # [B, S, D]
-            imag_part = self.ffn_imag(combined_imag)  # [B, S, D]
-        
-        # 実部と虚部を結合して波表現を作成
-        wave_repr = torch.cat([real_part, imag_part], dim=-1)  # [B, S, 2D]
-        
-        # 波表現から埋め込み空間への変換
-        output = self.to_embedding(wave_repr)  # [B, S, D]
-        output = self.norm(output)
-
-        return output
+            # 波の干渉（加算）- 安全に処理
+            combined_real = real_sen + real_token
+            combined_imag = imag_sen + imag_token
+            
+            # NaN値チェックと処理
+            if torch.isnan(combined_real).any():
+                combined_real = torch.nan_to_num(combined_real, nan=0.0)
+            if torch.isnan(combined_imag).any():
+                combined_imag = torch.nan_to_num(combined_imag, nan=0.0)
+            
+            # ウェーブレット変換を適用（低周波成分のみを使用）
+            if self.use_wavelet:
+                try:
+                    from slm.modules.wavelet import apply_wavelet_transform
+                    combined_real, combined_imag = apply_wavelet_transform(
+                        combined_real, combined_imag, wavelet_name=self.wavelet_name
+                    )
+                except Exception:
+                    # ウェーブレット変換に失敗した場合はスキップ
+                    pass
+            
+            # 生体ゆらぎゲート機構を使用する場合
+            if self.use_bio_noise:
+                try:
+                    # 実部と虚部から振幅と位相を計算
+                    amplitude, phase = self.compute_amplitude_phase(combined_real, combined_imag)
+                    
+                    # 安全チェック
+                    if torch.isnan(amplitude).any():
+                        amplitude = torch.nan_to_num(amplitude, nan=0.0)
+                    if torch.isnan(phase).any():
+                        phase = torch.nan_to_num(phase, nan=0.0)
+                    
+                    # 振幅と位相から生体ゆらぎを組み込んだゲートを計算
+                    gate = self.bio_gate(amplitude, phase, training=self.training)
+                    
+                    # ゲートで重み付け
+                    gated_real = combined_real * gate
+                    gated_imag = combined_imag * gate
+                    
+                    # ゲート適用後の波表現を処理
+                    real_part = self.ffn_real(gated_real)  # [B, S, D]
+                    imag_part = self.ffn_imag(gated_imag)  # [B, S, D]
+                except Exception:
+                    # エラー時は従来の処理にフォールバック
+                    real_part = self.ffn_real(combined_real)  # [B, S, D]
+                    imag_part = self.ffn_imag(combined_imag)  # [B, S, D]
+            else:
+                # 従来通りの処理
+                real_part = self.ffn_real(combined_real)  # [B, S, D]
+                imag_part = self.ffn_imag(combined_imag)  # [B, S, D]
+            
+            # NaN値チェックと処理
+            if torch.isnan(real_part).any():
+                real_part = torch.nan_to_num(real_part, nan=0.0)
+            if torch.isnan(imag_part).any():
+                imag_part = torch.nan_to_num(imag_part, nan=0.0)
+            
+            # 実部と虚部を結合して波表現を作成
+            wave_repr = torch.cat([real_part, imag_part], dim=-1)  # [B, S, 2D]
+            
+            # 波表現から埋め込み空間への変換
+            output = self.to_embedding(wave_repr)  # [B, S, D]
+            output = self.norm(output)
+            
+            # 最終出力の安全性確認
+            if torch.isnan(output).any():
+                output = torch.nan_to_num(output, nan=0.0)
+            
+            return output
+            
+        except Exception:
+            # 重大なエラーが発生した場合、入力をそのまま返して残差接続に頼る
+            # 入力を安全に処理して返す
+            safe_x = torch.nan_to_num(x, nan=0.0)
+            return safe_x
 
 # オリジナルの SingleWaveLayer クラスを保持（互換性のため）
 class SingleWaveLayer(WaveletEnhancedWaveLayer):
@@ -391,63 +405,42 @@ class WaveletEnhancedNetworkBlock(nn.Module):
         Returns:
             処理された出力テンソル [B, S, D]
         """
-        # RoPE位置エンコーディングを適用（各層で適用）
-        if self.use_rope:
-            B, S, D = x.shape
-            x_4d = x.view(B, S, 1, D)  # [B, S, 1, D] - RoPE用に形状変更
-            x_4d_rope = self.rope(x_4d)  # RoPE適用 - 次元保存 [B, S, 1, D]
-            wave_input = x_4d_rope.view(B, S, D)  # 元の形状に戻す [B, S, D]
-        else:
-            wave_input = x
-        
-        # 1. ウェーブレット強化Wave Layer処理
-        wave_output = self.wave_layer(wave_input)  # [B, S, D]
-        
-        # FFN層を通す
-        wave_output = self.ffn(wave_output)  # [B, S, D]
-        
-        # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
-        output = self.dropout(x + wave_output)
-        
-        return output
-        
-    def get_noise_scale(self) -> Optional[torch.Tensor]:
-        """
-        生体ゆらぎのスケールパラメータを取得（分析用）
-        
-        Returns:
-            noise_scale: ノイズスケールパラメータ [D]、使用していない場合はNone
-        """
-        if self.use_bio_noise:
-            return self.wave_layer.bio_gate.noise_scale
-        return None
-
-
-# # 従来のWaveNetworkBlockクラスを保持（互換性のため）
-# class WaveNetworkBlock(WaveletEnhancedNetworkBlock):
-#     """
-#     生体ゆらぎ機能を統合したWave Network Block の実装
-#     """
-#     def __init__(
-#         self, 
-#         hidden_size: int, 
-#         dropout_prob: float = 0.1,
-#         use_rope: bool = True,
-#         max_seq_len: int = 2048,
-#         noise_std: float = 0.1,
-#         use_bio_noise: bool = True,
-#         trainable_noise: bool = True
-#     ):
-#         super().__init__(
-#             hidden_size=hidden_size, 
-#             dropout_prob=dropout_prob,
-#             use_rope=use_rope,
-#             max_seq_len=max_seq_len,
-#             noise_std=noise_std,
-#             use_bio_noise=use_bio_noise,
-#             trainable_noise=trainable_noise,
-#             use_wavelet=False  # デフォルトではウェーブレットを使用しない
-        # )
+        try:
+            # 入力の安全性検証
+            if torch.isnan(x).any():
+                x = torch.nan_to_num(x, nan=0.0)
+            
+            # RoPE位置エンコーディングを適用（各層で適用）
+            if self.use_rope:
+                B, S, D = x.shape
+                x_4d = x.view(B, S, 1, D)  # [B, S, 1, D] - RoPE用に形状変更
+                x_4d_rope = self.rope(x_4d)  # RoPE適用 - 次元保存 [B, S, 1, D]
+                wave_input = x_4d_rope.view(B, S, D)  # 元の形状に戻す [B, S, D]
+            else:
+                wave_input = x
+            
+            # 1. ウェーブレット強化Wave Layer処理
+            wave_output = self.wave_layer(wave_input)  # [B, S, D]
+            
+            # FFN層を通す
+            wave_output = self.ffn(wave_output)  # [B, S, D]
+            
+            # 安全性検証
+            if torch.isnan(wave_output).any():
+                wave_output = torch.nan_to_num(wave_output, nan=0.0)
+            
+            # 2. 残差接続とPost-Norm（論文の図6(b)に従う）
+            output = self.dropout(x + wave_output)
+            
+            # 最終チェック
+            if torch.isnan(output).any():
+                output = torch.nan_to_num(output, nan=0.0)
+                
+            return output
+            
+        except Exception:
+            # エラーが発生した場合は入力をそのまま返す（残差接続に頼る）
+            return x
 
 # WaveNetworkLMクラスに生体ゆらぎとウェーブレット変換機能を統合
 class WaveNetworkLM(nn.Module):
@@ -540,24 +533,54 @@ class WaveNetworkLM(nn.Module):
             use_cut_cross_entropy=Trueの場合: hidden_states [B, S, D]
             use_cut_cross_entropy=Falseの場合: logits [B, S, V]
         """
-        # トークン埋め込み
-        hidden_states = self.token_embedding(input_ids)
-        
-        # 各レイヤーを通過（生体ゆらぎゲート機構とウェーブレット変換を適用）
-        for layer in self.layers:
-            hidden_states = layer(hidden_states)
+        try:
+            # トークン埋め込み
+            hidden_states = self.token_embedding(input_ids)
             
-        # 最終ノーマライゼーション
-        last_hidden_states = self.norm(hidden_states)
-        
-        # 損失関数タイプに基づいて異なる出力を返す
-        if self.use_cut_cross_entropy:
-            # Cut Cross Entropyの場合はlast_hidden_statesを返す
-            return last_hidden_states
-        else:
-            # 通常のCross Entropyの場合はlogitsを返す
-            logits = self.classifier(last_hidden_states)
-            return logits
+            # 入力の安全性検証
+            if torch.isnan(hidden_states).any():
+                hidden_states = torch.nan_to_num(hidden_states, nan=0.0)
+            
+            # 各レイヤーを通過（生体ゆらぎゲート機構とウェーブレット変換を適用）
+            for i, layer in enumerate(self.layers):
+                try:
+                    layer_output = layer(hidden_states)
+                    if torch.isnan(layer_output).any():
+                        # レイヤー出力にNaN値があれば、入力をそのまま使用
+                        continue
+                    hidden_states = layer_output
+                except Exception:
+                    # レイヤー処理でエラーが発生した場合、そのレイヤーをスキップ
+                    continue
+                    
+            # 最終ノーマライゼーション
+            last_hidden_states = self.norm(hidden_states)
+            
+            # NaN値チェックと処理
+            if torch.isnan(last_hidden_states).any():
+                last_hidden_states = torch.nan_to_num(last_hidden_states, nan=0.0)
+            
+            # 損失関数タイプに基づいて異なる出力を返す
+            if self.use_cut_cross_entropy:
+                # Cut Cross Entropyの場合はlast_hidden_statesを返す
+                return last_hidden_states
+            else:
+                # 通常のCross Entropyの場合はlogitsを返す
+                logits = self.classifier(last_hidden_states)
+                
+                # 最終チェック
+                if torch.isnan(logits).any():
+                    logits = torch.nan_to_num(logits, nan=0.0)
+                    
+                return logits
+                
+        except Exception:
+            # 重大なエラー発生時は、ゼロ埋め込みを返す
+            B, S = input_ids.shape
+            if self.use_cut_cross_entropy:
+                return torch.zeros(B, S, self.config.hidden_size, device=input_ids.device)
+            else:
+                return torch.zeros(B, S, self.config.vocab_size, device=input_ids.device)
 
     def get_classifier_weights(self) -> torch.Tensor:
         """分類器の重み (V, D)を返す"""

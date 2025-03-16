@@ -731,7 +731,7 @@ def main():
                 copy_start = time.time()
                 shutil.copytree(args.drive_train_data_dir, args.train_data_dir, dirs_exist_ok=True)
                 copy_end = time.time()
-                copied_dirs.append(f"train ({copy_end - copy_start:.1f}秒)")
+                copied_dirs.append(f"train ({copy_end - copy_start:.1秒)")
             
                 # 検証データのコピー（あれば）
                 if os.path.exists(args.drive_valid_data_dir):
@@ -739,7 +739,7 @@ def main():
                     copy_start = time.time()
                     shutil.copytree(args.drive_valid_data_dir, args.valid_data_dir, dirs_exist_ok=True)
                     copy_end = time.time()
-                    copied_dirs.append(f"valid ({copy_end - copy_start:.1f}秒)")
+                    copied_dirs.append(f"valid ({copy_end - copy_start:.1秒)")
                 else:
                     print(f"検証データが見つかりません。スキップします: {args.drive_valid_data_dir}")
                 
@@ -749,7 +749,7 @@ def main():
                     copy_start = time.time()
                     shutil.copytree(args.drive_test_data_dir, args.test_data_dir, dirs_exist_ok=True)
                     copy_end = time.time()
-                    copied_dirs.append(f"test ({copy_end - copy_start:.1f}秒)")
+                    copied_dirs.append(f"test ({copy_end - copy_start:.1秒)")
                 else:
                     print(f"テストデータが見つかりません。スキップします: {args.drive_test_data_dir}")
                 
@@ -760,12 +760,12 @@ def main():
                     os.makedirs(args.tokenizers_dir, exist_ok=True)
                     shutil.copytree(args.drive_tokenizers_dir, args.tokenizers_dir, dirs_exist_ok=True)
                     copy_end = time.time()
-                    copied_dirs.append(f"tokenizers ({copy_end - copy_start:.1f}秒)")
+                    copied_dirs.append(f"tokenizers ({copy_end - copy_start:.1秒)")
             
                 # コピー終了時間
                 end_time = datetime.now()
                 elapsed = end_time - start_time
-                print(f"コピー完了: {end_time.strftime('%H:%M:%S')} (所要時間: {elapsed.total_seconds():.1f}秒)")
+                print(f"コピー完了: {end_time.strftime('%H:%M:%S')} (所要時間: {elapsed.total_seconds():.1秒)")
                 print(f"コピーしたディレクトリ: {', '.join(copied_dirs)}")
                 print(f"高速アクセスのためのデータを /content/fast_dataへのコピーが完了しました")
             
@@ -803,11 +803,6 @@ def main():
                     try:
                         train_dataset = load_from_disk(args.train_data_dir)
                         dataset["train"] = train_dataset["train"] if "train" in train_dataset else train_dataset
-                        
-                        # データセットを少量にして実験
-                        if len(dataset["train"]) > 1000:
-                            print(f"開発用に訓練データを制限: {len(dataset['train'])} → 1000 件")
-                            dataset["train"] = dataset["train"].select(range(1000))
                         
                         print(f"訓練データを読み込みました: {len(dataset['train'])} 件")
                     except Exception as e:
@@ -903,6 +898,14 @@ def main():
     
     print(f"使用する語彙サイズ: {vocab_size}")
     
+    # mask_token_idがvocab_sizeを超えている場合の対応
+    if hasattr(tokenizer, 'mask_token_id') and tokenizer.mask_token_id is not None:
+        if tokenizer.mask_token_id >= vocab_size:
+            print(f"警告: mask_token_id ({tokenizer.mask_token_id}) が vocab_size ({vocab_size}) を超えています")
+            # vocab_sizeを適切に調整
+            vocab_size = max(vocab_size, tokenizer.mask_token_id + 1)
+            print(f"vocab_sizeを {vocab_size} に調整しました")
+    
     # モデル設定
     print("\nモデルを初期化します...")
     model_config = ModelConfig(
@@ -923,17 +926,9 @@ def main():
     model_config.set_tokenizer(tokenizer)
     
     # トレーニング設定
-    # より小さいバッチサイズを使用して速度と安定性のバランスを取る
-    batch_size = 32  # 安定性と速度のバランスを取るため小さめの値を使用
-    print(f"バッチサイズを調整: {args.batch_size} → {batch_size} (速度と安定性のため)")
-    
-    # 低い学習率からスタート
-    learning_rate = 5e-6  # 安定性のため小さい値からスタート
-    print(f"学習率を調整: {args.learning_rate} → {learning_rate} (安定性のため)")
-    
     training_config = TrainingConfig(
-        learning_rate=learning_rate,
-        batch_size=batch_size,  # バッチサイズの設定
+        learning_rate=args.learning_rate,  # 元のコマンドライン引数の値を使用
+        batch_size=args.batch_size,  # 元のコマンドライン引数の値を使用
         mlm_epochs=0,  # MLM学習はスキップ
         diffusion_epochs=args.epochs,  # Diffusion学習のみ実行
         weight_decay=0.01,
