@@ -37,7 +37,7 @@ class Trainer:
         train_dataset: Dataset,
         valid_dataset: Optional[Dataset] = None,
         training_config: Optional[TrainingConfig] = None,
-        paths_config: Optional<PathsConfig] = None,
+        paths_config: Optional[PathsConfig] = None,
         device: torch.device = None,
         seed: int = 42
     ):
