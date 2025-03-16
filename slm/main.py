@@ -1085,7 +1085,7 @@ def main():
         if args.checkpoint:
             print(f"\n==== チェックポイントから学習を再開します ====")
             print(f"チェックポイントパス: {args.checkpoint}")
-            start_epoch = trainer.load_checkpoint(args.checkpoint)
+            start_epoch, start_step = trainer.load_checkpoint(args.checkpoint)
             print(f"チェックポイントの読み込みが完了しました。エポック {start_epoch} から再開します。")
         
         # 訓練の実行前に重要なメッセージを表示
@@ -1099,7 +1099,7 @@ def main():
         
         # Diffusion訓練の実行
         print("\nDiffusionモデルの学習を開始します...")
-        trainer.train_diffusion(start_epoch=start_epoch)
+        trainer.train_diffusion(start_epoch=start_epoch, start_step=start_step)
         
         # 最終チェックポイントの保存
         trainer.save_checkpoint("final_model")

@@ -274,7 +274,7 @@ class Trainer:
         else:
             return loss.item()  # ローカルな損失値のみを返す
 
-    def train_diffusion(self, num_epochs: Optional[int] = None, start_epoch: int = 0) -> None:
+    def train_diffusion(self, num_epochs: Optional[int] = None, start_epoch: int = 0, start_step: int = 0) -> None:
         """
         拡散モデル方式でFine-tuning - TPU v5e-1 + Accelerateを使用
         start_epoch: 開始エポック番号（チェックポイントから再開する場合に使用）
@@ -340,7 +340,7 @@ class Trainer:
         )
         dataloader = self.accelerator.prepare(dataloader)
         
-        total_steps = 0
+        total_steps = start_step
         start_time = time.time()
         
         # Accelerate組み込みのプログレスバーを使用
@@ -540,17 +540,16 @@ class Trainer:
                         self.writer.add_scalar("Diffusion/Validation Loss", val_loss, current_epoch)
                         
                         # 検証損失を含むチェックポイント名
-                        checkpoint_name = f"model_e{current_epoch:03d}_loss{val_loss:.4f}"
+                        checkpoint_name = f"model_e{current_epoch:03d}_step{total_steps:04d}_loss{val_loss:.4f}"
                 except Exception as e:
                     print(f"検証中にエラーが発生しました: {e}")
                 
                 # チェックポイント保存
                 self.save_checkpoint(checkpoint_name)
                 
-                # エポック10の倍数ではfinal_modelとしても保存
-                if current_epoch % 10 == 0 or current_epoch == final_epoch:
-                    print(f"エポック {current_epoch} のチェックポイントをfinal_model.ptとしても保存")
-                    self.save_checkpoint("final_model")
+                # if current_epoch % 10 == 0 or current_epoch == final_epoch:
+                print(f"エポック {current_epoch} のチェックポイントをfinal_model.ptとしても保存")
+                self.save_checkpoint("final_model")
         
         # 学習完了（メインプロセスのみ）
         if is_main_process:
@@ -794,9 +793,26 @@ class Trainer:
         """
         Acceleratorを使用したチェックポイント読み込み（TPU v5e-1対応）
         チェックポイントの次のエポック番号を返す
+        
+        PyTorch 2.6+対応:
+        - weights_only=Falseを明示的に指定してクラス情報も含めて読み込む
+        - または、add_safe_globalsを使用して許可リストに追加
         """
-        # 全プロセスがロードする必要がある
-        checkpoint = torch.load(path, map_location=self.accelerator.device)
+        # PyTorch 2.6+対応: ModelConfigを安全なグローバルとして登録
+        from slm.config import ModelConfig, TrainingConfig
+        import torch.serialization
+        
+        # モデル設定クラスを許可リストに追加
+        torch.serialization.add_safe_globals([ModelConfig, TrainingConfig])
+        
+        try:
+            # まず安全なグローバルリストを使用して読み込み
+            checkpoint = torch.load(path, map_location=self.accelerator.device)
+        except Exception as e:
+            # 失敗した場合、weights_only=Falseで再試行（信頼できるチェックポイントの場合）
+            if self.accelerator.is_main_process:
+                print(f"通常の読み込みに失敗しました。weights_only=Falseで再試行します: {e}")
+            checkpoint = torch.load(path, map_location=self.accelerator.device, weights_only=False)
         
         # まずAcceleratorからオリジナルモデルを取得
         unwrapped_model = self.accelerator.unwrap_model(self.model)
@@ -806,26 +822,35 @@ class Trainer:
         
         # オプティマイザもロードする場合
         if "optimizer_state_dict" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            try:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except Exception as e:
+                if self.accelerator.is_main_process:
+                    print(f"オプティマイザ状態のロードに失敗しました。学習率のみ復元します: {e}")
+                    # オプティマイザの学習率だけ抽出して設定
+                    for param_group in self.optimizer.param_groups:
+                        if "lr" in checkpoint.get("optimizer_state_dict", {}).get("param_groups", [{}])[0]:
+                            param_group['lr'] = checkpoint["optimizer_state_dict"]["param_groups"][0]["lr"]
         
-        # チェックポイントのファイル名からエポック番号を抽出
-        import re
         start_epoch = 0
-        epoch_match = re.search(r'diffusion_epoch_(\d+)', path)
-        if epoch_match:
-            start_epoch = int(epoch_match.group(1))
-            if self.accelerator.is_main_process:
-                print(f"チェックポイントのエポック番号: {start_epoch}、次のエポック: {start_epoch + 1}")
-        
+        if "epoch" in checkpoint:
+            # チェックポイント内にエポック情報がある場合はそちらを優先
+            start_epoch = checkpoint["epoch"]
+        start_step = 0
+        if "step" in checkpoint:
+            # チェックポイント内にエポック情報がある場合はそちらを優先
+            start_step = checkpoint["step"]
+
         # メインプロセスのみが出力
         if self.accelerator.is_main_process:
-            print(f"Model loaded from {path}")
+            print(f"チェックポイント {path} を読み込みました")
+            print(f"次のエポック: {start_epoch + 1}")
         
         # 全プロセスが同期するのを待つ
         self.accelerator.wait_for_everyone()
         
         # 抽出したエポック番号を返す
-        return start_epoch
+        return start_epoch, start_step
 
     def close(self) -> None:
         """
