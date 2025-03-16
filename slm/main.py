@@ -731,7 +731,7 @@ def main():
                 copy_start = time.time()
                 shutil.copytree(args.drive_train_data_dir, args.train_data_dir, dirs_exist_ok=True)
                 copy_end = time.time()
-                copied_dirs.append(f"train ({copy_end - copy_start:.1秒)")
+                copied_dirs.append(f"train ({copy_end - copy_start:.1f}秒)")
             
                 # 検証データのコピー（あれば）
                 if os.path.exists(args.drive_valid_data_dir):
@@ -739,7 +739,7 @@ def main():
                     copy_start = time.time()
                     shutil.copytree(args.drive_valid_data_dir, args.valid_data_dir, dirs_exist_ok=True)
                     copy_end = time.time()
-                    copied_dirs.append(f"valid ({copy_end - copy_start:.1秒)")
+                    copied_dirs.append(f"valid ({copy_end - copy_start:.1f}秒)")
                 else:
                     print(f"検証データが見つかりません。スキップします: {args.drive_valid_data_dir}")
                 
@@ -749,7 +749,7 @@ def main():
                     copy_start = time.time()
                     shutil.copytree(args.drive_test_data_dir, args.test_data_dir, dirs_exist_ok=True)
                     copy_end = time.time()
-                    copied_dirs.append(f"test ({copy_end - copy_start:.1秒)")
+                    copied_dirs.append(f"test ({copy_end - copy_start:.1f}秒)")
                 else:
                     print(f"テストデータが見つかりません。スキップします: {args.drive_test_data_dir}")
                 
@@ -760,12 +760,12 @@ def main():
                     os.makedirs(args.tokenizers_dir, exist_ok=True)
                     shutil.copytree(args.drive_tokenizers_dir, args.tokenizers_dir, dirs_exist_ok=True)
                     copy_end = time.time()
-                    copied_dirs.append(f"tokenizers ({copy_end - copy_start:.1秒)")
+                    copied_dirs.append(f"tokenizers ({copy_end - copy_start:.1f}秒)")
             
                 # コピー終了時間
                 end_time = datetime.now()
                 elapsed = end_time - start_time
-                print(f"コピー完了: {end_time.strftime('%H:%M:%S')} (所要時間: {elapsed.total_seconds():.1秒)")
+                print(f"コピー完了: {end_time.strftime('%H:%M:%S')} (所要時間: {elapsed.total_seconds():.1f}秒)")
                 print(f"コピーしたディレクトリ: {', '.join(copied_dirs)}")
                 print(f"高速アクセスのためのデータを /content/fast_dataへのコピーが完了しました")
             
