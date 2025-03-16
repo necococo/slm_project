@@ -229,9 +229,6 @@ class WaveletEnhancedWaveLayer(nn.Module):
             if torch.isnan(x).any():
                 x = torch.nan_to_num(x, nan=0.0)
                 
-            # 極端な値をクリップして計算を安定化
-            x = torch.clamp(x, min=-100.0, max=100.0)
-            
             # 文レベルのwave表現 (グローバルコンテキスト)
             try:
                 real_sen, imag_sen = compute_wave_representation(x, global_mode=True, eps=eps)
@@ -314,7 +311,7 @@ class WaveletEnhancedWaveLayer(nn.Module):
             output = self.norm(output)
             
             # 最終出力の安全性確認
-            if torch.isnan(output).any()):
+            if torch.isnan(output).any():
                 output = torch.nan_to_num(output, nan=0.0)
             
             return output
