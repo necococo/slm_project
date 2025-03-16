@@ -750,8 +750,6 @@ def main():
                     shutil.copytree(args.drive_test_data_dir, args.test_data_dir, dirs_exist_ok=True)
                     copy_end = time.time()
                     copied_dirs.append(f"test ({copy_end - copy_start:.1f}秒)")
-                else:
-                    print(f"テストデータが見つかりません。スキップします: {args.drive_test_data_dir}")
                 
                 # トークナイザーのコピー（あれば、既にトークナイザー処理でコピー済みでない場合）
                 if os.path.exists(args.drive_tokenizers_dir) and not os.path.exists(os.path.join(args.tokenizers_dir, "tokenizer.pkl")):
@@ -901,20 +899,21 @@ def main():
     # mask_token_idがvocab_sizeを超えている場合の対応
     # 既存モデルとの互換性のため、mask_token_idを変更せず、vocab_sizeを拡張する方針に変更
     if hasattr(tokenizer, 'mask_token_id') and tokenizer.mask_token_id is not None:
+        print(f"マスクトークンID: {tokenizer.mask_token_id}")
+        # まず現在の語彙サイズに余裕をもたせる（mask_token_id + 1で確実に含まれるように）
         if tokenizer.mask_token_id >= vocab_size:
-            print(f"警告: mask_token_id ({tokenizer.mask_token_id}) が vocab_size ({vocab_size}) を超えています")
-            # vocab_sizeを適切に調整して、mask_token_idを含む範囲に拡張
             old_vocab_size = vocab_size
-            vocab_size = max(vocab_size, tokenizer.mask_token_id + 1)
+            vocab_size = tokenizer.mask_token_id + 1  # 確実にmask_token_idが含まれるサイズに
+            print(f"警告: マスクトークンID ({tokenizer.mask_token_id}) が語彙サイズ ({old_vocab_size}) を超えています")
             print(f"既存モデルとの互換性を維持するため、vocab_sizeを {old_vocab_size} から {vocab_size} に拡張しました")
-            print(f"注意: mask_token_idは変更せず {tokenizer.mask_token_id} のまま維持します")
+            print(f"注意: mask_token_idは変更せず {tokenizer.mask_token_id} のまま使用します")
     
     # モデル設定
     print("\nモデルを初期化します...")
     model_config = ModelConfig(
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
-        vocab_size=vocab_size,
+        vocab_size=vocab_size,  # 拡張後のvocab_sizeを使用
         max_seq_len=args.max_seq_len,
         dropout_prob=0.2,
         use_rope=True,

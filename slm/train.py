@@ -285,20 +285,19 @@ class Trainer:
             return
 
         vocab_size = self.model.get_classifier_weights().size(0)
-        # マスクトークンIDをトークナイザーから取得（初期値は4）
+        # マスクトークンIDをトークナイザーから取得
         mask_token_id = 4  # デフォルト値
         if hasattr(self.model.config, 'tokenizer') and self.model.config.tokenizer is not None:
             if hasattr(self.model.config.tokenizer, 'mask_token_id'):
                 mask_token_id = self.model.config.tokenizer.mask_token_id
         
-        # 重要: マスクトークンIDが語彙サイズを超えていないか確認
+        # 重要: マスクトークンIDのチェックと警告
         if mask_token_id >= vocab_size:
             print(f"警告: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています。")
             print(f"既存モデルとの互換性を維持するため、vocab_sizeを {vocab_size} から {mask_token_id + 1} に拡張します。")
-            # モデルの分類器の重みを拡張する必要がありますが、ここでは難しいため警告のみ
-            print(f"注意: モデルの出力層の拡張が必要です。チェックポイントからの再開時に問題が発生する可能性があります。")
-            # この時点でvocab_sizeを変更しても、すでにモデルは初期化済みなので効果はない
-            # トレーニングエラーを避けるため、ここでは警告のみ表示
+            print(f"注意: モデル初期化時にvocab_sizeの調整が必要です。チェックポイントからの再開時にエラーが発生する可能性があります。")
+            # この時点ではモデル出力層サイズの変更はできないため、警告を表示するのみ
+            # 実際に問題が発生すればエラーハンドリングで処理
         
         # diffuserもacceleratorで準備
         diffuser = SimpleTextDiffusion(
@@ -682,25 +681,23 @@ class Trainer:
             # 語彙サイズを取得
             vocab_size = self.model.get_classifier_weights().size(0)
             
-            # マスクトークンIDをチェック
+            # マスクトークンIDをチェック - トークナイザーから取得
             mask_token_id = 4  # デフォルト値
             if tokenizer is not None and hasattr(tokenizer, 'mask_token_id'):
                 mask_token_id = tokenizer.mask_token_id
                 
-                # マスクトークンIDが語彙サイズを超えていないか確認
+                # マスクトークンIDが語彙サイズを超えていることは警告のみで、変更しない
+                # (既存モデルとの互換性のため)
                 if mask_token_id >= vocab_size:
-                    print(f"警告: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています。")
-                    print(f"マスクトークンIDを語彙サイズ-1 ({vocab_size-1}) に調整します。")
-                    mask_token_id = vocab_size - 1
-                    # トークナイザーの設定も更新
-                    tokenizer.mask_token_id = mask_token_id
+                    print(f"検証中: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています")
+                    print(f"既存モデルとの互換性を維持するため、マスクトークンIDはそのまま使用します")
             
             collator = CustomCollator(
                 tokenizer=tokenizer,
                 model_config=self.model.config,
                 mlm=True,
                 mlm_probability=self.training_config.mlm_probability,
-                mask_token_id=mask_token_id,
+                mask_token_id=mask_token_id,  # そのまま使用
                 qa=False
             )
             
