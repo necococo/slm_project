@@ -899,12 +899,15 @@ def main():
     print(f"使用する語彙サイズ: {vocab_size}")
     
     # mask_token_idがvocab_sizeを超えている場合の対応
+    # 既存モデルとの互換性のため、mask_token_idを変更せず、vocab_sizeを拡張する方針に変更
     if hasattr(tokenizer, 'mask_token_id') and tokenizer.mask_token_id is not None:
         if tokenizer.mask_token_id >= vocab_size:
             print(f"警告: mask_token_id ({tokenizer.mask_token_id}) が vocab_size ({vocab_size}) を超えています")
-            # vocab_sizeを適切に調整
+            # vocab_sizeを適切に調整して、mask_token_idを含む範囲に拡張
+            old_vocab_size = vocab_size
             vocab_size = max(vocab_size, tokenizer.mask_token_id + 1)
-            print(f"vocab_sizeを {vocab_size} に調整しました")
+            print(f"既存モデルとの互換性を維持するため、vocab_sizeを {old_vocab_size} から {vocab_size} に拡張しました")
+            print(f"注意: mask_token_idは変更せず {tokenizer.mask_token_id} のまま維持します")
     
     # モデル設定
     print("\nモデルを初期化します...")

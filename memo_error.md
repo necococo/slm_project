@@ -151,3 +151,12 @@ Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
 特殊トークン情報:
   MASK: <mask> (ID: 32100)
   語彙サイズ: 32000
+
+
+  使用する語彙サイズ: 32000
+警告: mask_token_id (32100) が vocab_size (32000) を超えています
+vocab_sizeを 32101 に調整しました
+
+特殊トークン情報:
+  MASK: <mask> (ID: 32100)
+  語彙サイズ: 32000
