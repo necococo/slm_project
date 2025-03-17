@@ -81,23 +81,27 @@ def load_tokenizer(
     if not tokenizer_path.exists():
         print(f"トークナイザーのパスが見つかりません: {tokenizer_path}")
         return None
+    else:
+        try:
+            print(f"トークナイザーをロードしています: {tokenizer_path}")
+            
+            # AutoTokenizerを使ってトークナイザーをロード
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(tokenizer_path),
+                use_fast=use_fast
+            )
+            
+            print(f"トークナイザーが正常にロードされました")
+            print(f"語彙サイズ: {len(tokenizer)}")
+
+            for i in range(31999, 32100):
+                decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
+                print(f"ID: {i} -> {decoded_text}")
+            return tokenizer
     
-    try:
-        print(f"トークナイザーをロードしています: {tokenizer_path}")
-        
-        # AutoTokenizerを使ってトークナイザーをロード
-        tokenizer = AutoTokenizer.from_pretrained(
-            str(tokenizer_path),
-            use_fast=use_fast
-        )
-        
-        print(f"トークナイザーが正常にロードされました")
-        print(f"語彙サイズ: {len(tokenizer)}")
-
-        for i in range(31999, 32100):
-            decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
-            print(f"ID: {i} -> {decoded_text}")
-
+        except Exception as e:
+            print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
+            return None
         # マスクトークンの検出と設定
         # Why not: 異なるトークナイザーでは <mask> や [MASK] など様々な表記があるため
         # 複数の候補を試して適切なマスクトークンを検出する
@@ -160,7 +164,7 @@ def load_tokenizer(
             
 #             print(f"特殊トークン: {special_tokens}")
         
-        return tokenizer
+        # return tokenizer
     
 #     except Exception as e:
 #         print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
