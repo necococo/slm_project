@@ -124,18 +124,48 @@ def prepare_test_dataset(args):
     """
     How:
         評価用データセットを準備する
+        
+    Why not:
+        初回実行時はローカルデータがないため、自動的にコピーするようにする
     """
-    if args.test_data_path is None:
-        # デフォルトでwikitext-103の最初の数サンプルを使用
-        print("テストデータセットが指定されていないため、wikitext-103からサンプルをロードします")
-        dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="test")
-        if args.n_samples > 0:
-            dataset = dataset.select(range(min(args.n_samples, len(dataset))))
-        return dataset
-    
     # ローカルディレクトリからロード
     if os.path.isdir(args.test_data_path):
         print(f"ディレクトリ {args.test_data_path} からテストデータセットをロード中...")
+        
+        # 指定されたパスがまだ存在しない場合は、代替パスを確認
+        if not os.path.exists(os.path.join(args.test_data_path, "dataset_info.json")) and not os.path.exists(os.path.join(args.test_data_path, "data")):
+            print(f"警告: {args.test_data_path} に有効なデータセットが見つかりません")
+            
+            # Google Driveなど別の場所からコピーする可能性のあるパスを探す
+            potential_paths = [
+                f"/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja/test",
+            ]
+            
+            src_path = None
+            for path in potential_paths:
+                if os.path.exists(path) and (
+                    os.path.exists(os.path.join(path, "dataset_info.json")) or 
+                    os.path.exists(os.path.join(path, "data"))
+                ):
+                    src_path = path
+                    break
+            
+            # コピー元が見つかった場合
+            if src_path:
+                print(f"代替データソースを発見しました: {src_path}")
+                print(f"テストデータを {src_path} から {args.test_data_path} にコピーします")
+                
+                try:
+                    # ディレクトリ作成
+                    os.makedirs(args.test_data_path, exist_ok=True)
+                    
+                    # データをコピー
+                    import shutil
+                    shutil.copytree(src_path, args.test_data_path, dirs_exist_ok=True)
+                    print(f"データコピー完了: {src_path} → {args.test_data_path}")
+                except Exception as e:
+                    print(f"データコピーエラー: {e}")
+        
         try:
             dataset = load_from_disk(args.test_data_path)
             if isinstance(dataset, dict) and "test" in dataset:
@@ -316,6 +346,26 @@ def main():
     
     # 出力ディレクトリの作成
     os.makedirs(args.output_dir, exist_ok=True)
+    
+    # データパスのデフォルト設定を追加（ローカルとドライブのマッピング）
+    if args.test_data_path is None:
+        # Google Driveがマウントされているか確認
+        drive_path = "/content/drive/MyDrive"
+        if os.path.exists(drive_path):
+            # Googleドライブのデフォルトパス
+            default_test_path = os.path.join(drive_path, "slm/data/fujiki/wiki40b_ja/test")
+            if os.path.exists(default_test_path):
+                print(f"Googleドライブ上のデフォルトテストデータを使用します: {default_test_path}")
+                args.test_data_path = default_test_path
+            else:
+                # ローカルのデフォルトパス
+                local_test_path = "/content/fast_data/test"
+                if not os.path.exists(local_test_path):
+                    os.makedirs(local_test_path, exist_ok=True)
+                args.test_data_path = local_test_path
+        else:
+            # ローカル環境のデフォルトパス
+            args.test_data_path = "./data/test"
     
     # モデルのロード
     model, model_tokenizer = load_model_from_checkpoint(args.checkpoint_path, str(device))
