@@ -381,7 +381,7 @@ def load_arrow_data(
         # テキストカラムを取得（通常は'text'という名前）
         text_column = None
         for col_name in table.column_names:
-            if col_name.lower() == 'text' or 'content' in col_name.lower():
+            if (col_name.lower() == 'text' or 'content' in col_name.lower()):):
                 text_column = col_name
                 break
         
@@ -417,17 +417,125 @@ def evaluate_model(
     tokenizer: PreTrainedTokenizer,
     collator: Any,
     test_data: Optional[str] = None,
-    num_examples: int = 10,
+    num_examples: int = 10,7,
     batch_size: int = 4,
     device: Optional[torch.device] = None,
-    max_length: int = 512
-) -> Dict[str, Any]:
-    """
+    max_length: int = 512h.device] = None,
+) -> Dict[str, Any]:ol = True
+    """r:
     モデルを評価し、パープレキシティやサンプル生成を行います。
-    
+    モデルによるテキスト生成を行います。
     Args:
         model: 評価対象のモデル
         tokenizer: トークナイザー
+        collator: データコレーターコードを行うトークナイザー
+        test_data: テストデータのパス (Noneの場合はサンプル文のみ評価)
+        num_examples: 生成するサンプル例の数ン数
+        batch_size: バッチサイズ性を制御する温度パラメータ
+        device: 実行デバイス考慮する上位k個のトークン
+        max_length: 最大シーケンス長みを考慮するnucleusサンプリング閾値
+        device: 計算を行うデバイス
+    Returns:n_output: 特殊文字や制御文字を取り除くか
+        Dict[str, Any]: 評価結果を含む辞書
+    Returns:
+    How:str: 生成されたテキスト
+        - サンプルプロンプトからテキスト生成を行う
+        - テストデータから損失とパープレキシティを計算する
+        - マスク単語予測の精度を評価する、モデルで自己回帰的に次トークンを
+    """ 予測しながら文章を生成していきます。生成の多様性と品質のバランスを
+    if device is None:_pサンプリングを組み合わせています。
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+    model.eval()  # 評価モードに設定e("cuda" if torch.cuda.is_available() else "cpu")
+    results = {}
+    # 入力のエンコード
+    # サンプルプロンプトの定義kenizer.encode(prompt, return_tensors="pt").to(device)
+    sample_prompts = [orch.ones_like(input_ids)
+        "こんにちは、私の名前は",
+        "今日の天気は",
+        "日本の首都は",= input_ids.shape[1]
+        "人工知能の研究は",
+        "大規模言語モデルとは"
+    ]odel.eval()
+    with torch.no_grad():
+    # テキスト生成による評価range(max_new_tokens):
+    print("\n=== テキスト生成評価 ===")
+    generated_texts = []del(input_ids, attention_mask=attention_mask)
+            next_token_logits = outputs[:, -1, :]
+    for prompt in sample_prompts[:num_examples]:
+        print(f"\nプロンプト: {prompt}")
+        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+            
+        # 生成パラメータ-K サンプリング
+        gen_length = min(max_length - input_ids.shape[1], 50)  # 生成する最大トークン数
+                indices_to_remove = torch.topk(scaled_logits, k=top_k)[0][..., -1, None] > scaled_logits
+        # 実際の生成処理caled_logits = scaled_logits.masked_fill(indices_to_remove, float('-inf'))
+        with torch.no_grad():
+            # 単純な自己回帰生成cleus) サンプリング
+            for _ in range(gen_length):
+                # フォワードパスgits, sorted_indices = torch.sort(scaled_logits, descending=True)
+                outputs = model(input_ids)umsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                next_token_logits = outputs[:, -1, :]
+                # 累積確率がtop_pを超える位置を特定
+                # 次のトークンを選択（温度ありのサンプリング） = cumulative_probs > top_p
+                temperature = 0.7
+                probs = F.softmax(next_token_logits / temperature, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                # シフトして次の位置からマスク
+                # 生成シーケンスを拡張es_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                input_ids = torch.cat([input_ids, next_token], dim=1)
+                
+                # EOSトークンが生成されたら終了
+                if next_token.item() == tokenizer.eos_token_id:its, dtype=torch.bool).scatter_(
+                    breakorted_indices, sorted_indices_to_remove
+                )
+        # 生成されたテキストをデコードogits = scaled_logits.masked_fill(indices_to_remove, float('-inf'))
+        generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        print(f"生成結果: {generated_text}")
+        generated_texts.append({"prompt": prompt, "generated": generated_text})
+            next_token = torch.multinomial(probs, num_samples=1)
+    results["generated_texts"] = generated_texts
+            # 入力シーケンスの拡張
+    # テストデータがある場合、パープレキシティを計算.cat([input_ids, next_token], dim=1)
+    if test_data is not None:torch.cat([attention_mask, torch.ones_like(next_token)], dim=1)
+        try:
+            print("\n=== パープレキシティ評価 ===")
+            print(f"テストデータパス: {test_data}")t None and next_token.item() == tokenizer.eos_token_id:
+                break
+            # ファイル形式に応じたデータ読み込み処理
+            test_texts = []分を含む）
+            if test_data.endswith('.arrow'):], skip_special_tokens=True)
+                # Arrowファイルからデータを読み込み
+                test_texts = load_arrow_data(test_data, limit=100)
+            elif test_data.endswith('.jsonl'):f full_text.startswith(prompt) else full_text
+                # JSONLファイルからデータを読み込み
+                import json
+                with open(test_data, "r", encoding="utf-8") as f:
+                    test_texts = [json.loads(line)["text"] for line in f][:100]
+            else:御文字を除去
+                # テキストファイルとして処理(r'[\x00-\x1F\x7F-\x9F]', '', generated_text)
+                with open(test_data, "r", encoding="utf-8") as f:
+                    test_texts = [line.strip() for line in f][:100]ext)
+            
+            print(f"テストデータを{len(test_texts)}サンプルロードしました")
+            
+            # データの前処理
+            from torch.utils.data import Dataset, DataLoader
+            ny,
+            class SimpleDataset(Dataset):
+                def __init__(self, texts, tokenizer, max_length):
+                    self.examples = []
+                    for text in texts:
+                        encoding = tokenizer(
+                            text,] = None,
+                            truncation=True,
+                            max_length=max_length,
+                            return_tensors="pt"
+                        )生成を行います。
+                        self.examples.append({
+                            "input_ids": encoding["input_ids"][0],
+                            "attention_mask": encoding["attention_mask"][0]
+                        })
         collator: データコレーター
         test_data: テストデータのパス (Noneの場合はサンプル文のみ評価)
         num_examples: 生成するサンプル例の数
@@ -451,119 +559,11 @@ def evaluate_model(
     
     # サンプルプロンプトの定義
     sample_prompts = [
-        "こんにちは、私の名前は",
+                    labels = batch["labels"].to(device)
         "今日の天気は",
         "日本の首都は",
-        "人工知能の研究は",
-        "大規模言語モデルとは"
-    ]
-    
-    # テキスト生成による評価
-    print("\n=== テキスト生成評価 ===")
-    generated_texts = []
-    
-    for prompt in sample_prompts[:num_examples]:
-        print(f"\nプロンプト: {prompt}")
-        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-        
-        # 生成パラメータ
-        gen_length = min(max_length - input_ids.shape[1], 50)  # 生成する最大トークン数
-        
-        # 実際の生成処理
-        with torch.no_grad():
-            # 単純な自己回帰生成
-            for _ in range(gen_length):
-                # フォワードパス
-                outputs = model(input_ids)
-                next_token_logits = outputs[:, -1, :]
-                
-                # 次のトークンを選択（温度ありのサンプリング）
-                temperature = 0.7
-                probs = F.softmax(next_token_logits / temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                # 生成シーケンスを拡張
-                input_ids = torch.cat([input_ids, next_token], dim=1)
-                
-                # EOSトークンが生成されたら終了
-                if next_token.item() == tokenizer.eos_token_id:
-                    break
-        
-        # 生成されたテキストをデコード
-        generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-        print(f"生成結果: {generated_text}")
-        generated_texts.append({"prompt": prompt, "generated": generated_text})
-    
-    results["generated_texts"] = generated_texts
-    
-    # テストデータがある場合、パープレキシティを計算
-    if test_data is not None:
-        try:
-            print("\n=== パープレキシティ評価 ===")
-            print(f"テストデータパス: {test_data}")
-            
-            # ファイル形式に応じたデータ読み込み処理
-            test_texts = []
-            if test_data.endswith('.arrow'):
-                # Arrowファイルからデータを読み込み
-                test_texts = load_arrow_data(test_data, limit=100)
-            elif test_data.endswith('.jsonl'):
-                # JSONLファイルからデータを読み込み
-                import json
-                with open(test_data, "r", encoding="utf-8") as f:
-                    test_texts = [json.loads(line)["text"] for line in f][:100]
-            else:
-                # テキストファイルとして処理
-                with open(test_data, "r", encoding="utf-8") as f:
-                    test_texts = [line.strip() for line in f][:100]
-            
-            print(f"テストデータを{len(test_texts)}サンプルロードしました")
-            
-            # データの前処理
-            from torch.utils.data import Dataset, DataLoader
-            
-            class SimpleDataset(Dataset):
-                def __init__(self, texts, tokenizer, max_length):
-                    self.examples = []
-                    for text in texts:
-                        encoding = tokenizer(
-                            text,
-                            truncation=True,
-                            max_length=max_length,
-                            return_tensors="pt"
-                        )
-                        self.examples.append({
-                            "input_ids": encoding["input_ids"][0],
-                            "attention_mask": encoding["attention_mask"][0]
-                        })
-                
-                def __len__(self):
-                    return len(self.examples)
-                
-                def __getitem__(self, idx):
-                    return self.examples[idx]
-            
-            # データセットとデータローダーの作成
-            test_dataset = SimpleDataset(test_texts, tokenizer, max_length)
-            test_dataloader = DataLoader(
-                test_dataset, 
-                batch_size=batch_size, 
-                collate_fn=collator
-            )
-            
-            # パープレキシティ計算
-            total_loss = 0.0
-            total_length = 0
-            
-            with torch.no_grad():
-                for batch in tqdm(test_dataloader, desc="パープレキシティ計算"):
-                    input_ids = batch["input_ids"].to(device)
-                    attention_mask = batch["attention_mask"].to(device)
-                    labels = batch["labels"].to(device)
-                    
-                    outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
                     loss = outputs.loss.item()
-                    
+        "大規模言語モデルとは"
                     # 有効なトークン数（-100でないラベル）を計算
                     valid_tokens = (labels != -100).sum().item()
                     
@@ -576,35 +576,200 @@ def evaluate_model(
             print(f"テストセットのパープレキシティ: {perplexity:.4f}")
             results["perplexity"] = perplexity
             results["loss"] = avg_loss
-        
+            tokenizer=tokenizer,
         except Exception as e:
             print(f"パープレキシティ計算中にエラーが発生しました: {e}")
-            import traceback
+            import traceback  # 少し高めの温度で多様性を増加
             traceback.print_exc()
-    
-    # マスク単語予測の評価
-    try:
+            top_p=0.9,
+    # マスク単語予測の評価ce=device,
+    try:    clean_output=True
         print("\n=== マスク単語予測評価 ===")
         mask_examples = [
-            f"日本の首都は{tokenizer.mask_token}です。",
+            f"日本の首都は{tokenizer.mask_token}です。",)
             f"{tokenizer.mask_token}は美しい島国です。",
             f"人工知能の研究は{tokenizer.mask_token}分野で行われています。",
             f"{tokenizer.mask_token}が開発した相対性理論は物理学に革命をもたらした。"
-        ]
+        ])
         
-        mask_predictions = []
+        mask_predictions = []] = generated_texts
         
         for example in mask_examples:
             print(f"\n入力文: {example}")
             inputs = tokenizer(example, return_tensors="pt")
             inputs = {k: v.to(device) for k, v in inputs.items()}
-            
+            print(f"テストデータパス: {test_data}")
             # マスク位置を特定
             mask_positions = (inputs["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1]
-            
-            with torch.no_grad():
+            test_texts = []
+            with torch.no_grad():('.arrow'):
                 outputs = model(**inputs)
                 logits = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+            elif test_data.endswith('.jsonl'):
+            # 各マスク位置で予測ファイルからデータを読み込み
+            for pos in mask_positions:
+                mask_logits = logits[0, pos, :]ing="utf-8") as f:
+                topk = torch.topk(mask_logits, k=5)"text"] for line in f][:100]
+                topk_tokens = [tokenizer.decode([idx]) for idx in topk.indices]
+                topk_probs = topk.values.softmax(dim=-1).cpu().numpy()
+                with open(test_data, "r", encoding="utf-8") as f:
+                print(f"予測トップ5: {list(zip(topk_tokens, topk_probs.tolist()))}")
+                mask_predictions.append({
+                    "text": example,_texts)}サンプルロードしました")
+                    "predictions": [{"token": t, "prob": float(p)} for t, p in zip(topk_tokens, topk_probs)]
+                })前処理
+            from torch.utils.data import Dataset, DataLoader
+        results["mask_predictions"] = mask_predictions
+            class SimpleDataset(Dataset):
+    except Exception as e:__(self, texts, tokenizer, max_length):
+        print(f"マスク予測中にエラーが発生しました: {e}")
+        import tracebacktext in texts:
+        traceback.print_exc()ing = tokenizer(
+                            text,
+    return results          truncation=True,
+                            max_length=max_length,
+                            return_tensors="pt"
+def debug_model_output(
+    model: Any,                 self.examples.append({
+    tokenizer: PreTrainedTokenizer, ut_ids": encoding["input_ids"][0],
+    input_text: str, ing["attention_mask"][0]
+    device: torch.device                })
+) -> None:
+    """
+    モデルの出力をデバッグするためのヘルパー関数です。
+    
+    Args:
+        model: 検査するモデル            return self.examples[idx]
+        tokenizer: 使用するトークナイザー
+        input_text: 入力テキスト
+        device: 計算デバイスaset(test_texts, tokenizer, max_length)
+    ader(
+    How:
+        入力テキストをトークン化し、モデルに通してその出力形式と値を検査します。    batch_size=batch_size, 
+        これによりモデルの動作を理解し、適切な処理方法を見つけることができます。
+    """
+    print(f"\n=== モデル出力デバッグ ({input_text}) ===")
+    input_ids = tokenizer.encode(input_text, return_tensors="pt").to(device)
+    
+    # 入力トークンIDs
+    print(f"入力トークン: {input_ids.tolist()}")
+    
+    # モデル出力の取得        for batch in tqdm(test_dataloader, desc="パープレキシティ計算"):
+    with torch.no_grad():  input_ids = batch["input_ids"].to(device)
+        outputs = model(input_ids)
+    "].to(device)
+    # 出力の型と形状を確認        
+    print(f"出力の型: {type(outputs)}")input_ids, attention_mask=attention_mask, labels=labels)
+    if isinstance(outputs, torch.Tensor):
+        print(f"出力の形状: {outputs.shape}")
+        print(f"出力のデータ型: {outputs.dtype}")        # 有効なトークン数（-100でないラベル）を計算
+    else:!= -100).sum().item()
+        for i, output in enumerate(outputs):
+            if isinstance(output, torch.Tensor):
+                print(f"出力[{i}]の形状: {output.shape}, データ型: {output.dtype}")
+    
+    # 最後のトークンの予測確率を確認loss / total_length if total_length > 0 else float('inf')
+    if isinstance(outputs, torch.Tensor):
+        last_token_logits = outputs[0, -1, :]
+    else:")
+        # モデル固有の出力構造に応じて調整results["perplexity"] = perplexity
+        if hasattr(outputs, "logits"):["loss"] = avg_loss
+            last_token_logits = outputs.logits[0, -1, :]
+        else:
+            last_token_logits = outputs[0][0, -1, :] {e}")
+    
+    # 上位5つのトークンとその確率を表示
+    topk = torch.topk(last_token_logits, k=5)
+    probs = F.softmax(topk.values, dim=-1)の評価
+    
+    print("次トークンの予測（Top 5）:")ク単語予測評価 ===")
+    for i, (token_id, prob) in enumerate(zip(topk.indices.tolist(), probs.tolist())):
+        token = tokenizer.decode([token_id])。",
+        print(f"{i+1}. '{token}' (ID: {token_id}, 確率: {prob:.4f})")
+f"人工知能の研究は{tokenizer.mask_token}分野で行われています。",
+
+if __name__ == "__main__":
+    try:
+        # 評価環境を準備（語彙サイズ32100を指定）tions = []
+        env = prepare_environment(vocab_size=32100)
+        mask_examples:
+        print("\n=== 評価環境の準備が完了しました ===")
+        print(f"データパス: {env.get('data_path', 'N/A')}")
+        print(f"モデルパス: {env.get('model_path', 'N/A')}")n inputs.items()}
+        print(f"トークナイザー: {'ロード成功' if env.get('tokenizer') is not None else 'ロード失敗'}")        
+        print(f"モデル: {'ロード成功' if env.get('model') is not None else 'ロード失敗'}")
+        "] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1]
+        # モデル情報の表示
+        if env.get('model') is not None:d():
+            model = env.get('model')                outputs = model(**inputs)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        traceback.print_exc()        import traceback        print(f"スクリプト実行中にエラーが発生しました: {str(e)}")    except Exception as e:                print(f"評価結果を保存しました: {result_path}")                json.dump(eval_results, f, ensure_ascii=False, indent=2)            with open(result_path, "w", encoding="utf-8") as f:            import json            result_path = "evaluation_results.json"            # 結果の保存                        print(f"マスク予測サンプル数: {len(eval_results.get('mask_predictions', []))}")            print(f"生成サンプル数: {len(eval_results.get('generated_texts', []))}")                            print(f"パープレキシティ: {eval_results['perplexity']:.4f}")            if "perplexity" in eval_results:            print("\n=== 評価結果サマリー ===")            # 結果のサマリー表示                        )                device=env["device"]                test_data=test_data,                collator=env.get("collator"),                tokenizer=env["tokenizer"],                model=env["model"],            eval_results = evaluate_model(            # 評価の実行                            print(f"テストデータが見つかりました: {test_data}")            else:                print("テストデータが見つかりません。サンプル生成のみで評価を行います。")            if not test_data:                            test_data = jsonl_path if os.path.exists(jsonl_path) else None                jsonl_path = os.path.join(env.get("data_path", ""), "validation.jsonl")            if not test_data:            # Arrow形式が見つからない場合はJSONLファイルを探す                        test_data = arrow_path if os.path.exists(arrow_path) else None            arrow_path = os.path.join(env.get("data_path", ""), "test/data-00000-of-00001.arrow")            # テストデータのパス（Arrow形式ファイル）                        print("\n=== モデル評価を開始します ===")                        debug_model_output(model, tokenizer, "こんにちは", device)            # モデルの出力形式を確認                        device = env.get("device")            tokenizer = env.get("tokenizer")             model = env.get("model")            # モデルの出力形式をデバッグ        if env.get("model") is not None and env.get("tokenizer") is not None:        # モデル評価を実行                    print(f"学習可能パラメータ数: {trainable_params:,}")            print(f"総パラメータ数: {total_params:,}")            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)            total_params = sum(p.numel() for p in model.parameters())            # パラメータ数のカウント                            print(f"埋め込み次元: {model.embedding_dim}")            if hasattr(model, "embedding_dim"):                        print(f"モデルタイプ: {type(model).__name__}")            print("\n=== モデル情報 ===")                logits = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
             
             # 各マスク位置で予測
             for pos in mask_positions:
@@ -617,87 +782,88 @@ def evaluate_model(
                 mask_predictions.append({
                     "text": example,
                     "predictions": [{"token": t, "prob": float(p)} for t, p in zip(topk_tokens, topk_probs)]
-                })
-        
-        results["mask_predictions"] = mask_predictions
-    
-    except Exception as e:
-        print(f"マスク予測中にエラーが発生しました: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return results
 
 
-if __name__ == "__main__":
-    try:
-        # 評価環境を準備（語彙サイズ32100を指定）
-        env = prepare_environment(vocab_size=32100)
-        
-        print("\n=== 評価環境の準備が完了しました ===")
-        print(f"データパス: {env.get('data_path', 'N/A')}")
-        print(f"モデルパス: {env.get('model_path', 'N/A')}")
-        print(f"トークナイザー: {'ロード成功' if env.get('tokenizer') is not None else 'ロード失敗'}")
-        print(f"モデル: {'ロード成功' if env.get('model') is not None else 'ロード失敗'}")
-        
-        # モデル情報の表示
-        if env.get('model') is not None:
-            model = env.get('model')
-            print("\n=== モデル情報 ===")
-            print(f"モデルタイプ: {type(model).__name__}")
-            
-            if hasattr(model, "embedding_dim"):
-                print(f"埋め込み次元: {model.embedding_dim}")
-            
-            # パラメータ数のカウント
-            total_params = sum(p.numel() for p in model.parameters())
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            print(f"総パラメータ数: {total_params:,}")
-            print(f"学習可能パラメータ数: {trainable_params:,}")
-        
-        # モデル評価を実行
-        if env.get("model") is not None and env.get("tokenizer") is not None:
-            print("\n=== モデル評価を開始します ===")
-            
-            # テストデータのパス（Arrow形式ファイル）
-            arrow_path = os.path.join(env.get("data_path", ""), "test/data-00000-of-00001.arrow")
-            test_data = arrow_path if os.path.exists(arrow_path) else None
-            
-            # Arrow形式が見つからない場合はJSONLファイルを探す
-            if not test_data:
-                jsonl_path = os.path.join(env.get("data_path", ""), "validation.jsonl")
-                test_data = jsonl_path if os.path.exists(jsonl_path) else None
-            
-            if not test_data:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        traceback.print_exc()        import traceback        print(f"スクリプト実行中にエラーが発生しました: {str(e)}")    except Exception as e:                print(f"評価結果を保存しました: {result_path}")                json.dump(eval_results, f, ensure_ascii=False, indent=2)            with open(result_path, "w", encoding="utf-8") as f:            import json            result_path = "evaluation_results.json"            # 結果の保存                        print(f"マスク予測サンプル数: {len(eval_results.get('mask_predictions', []))}")            print(f"生成サンプル数: {len(eval_results.get('generated_texts', []))}")
+
+
+
+                            print(f"パープレキシティ: {eval_results['perplexity']:.4f}")
+
+
+            if "perplexity" in eval_results:            print("\n=== 評価結果サマリー ===")
+            # 結果のサマリー表示                        )                device=env["device"]
+
+
+                test_data=test_data,                collator=env.get("collator"),                tokenizer=env["tokenizer"],
+
+
+                model=env["model"],            eval_results = evaluate_model(            # 評価の実行
+                            print(f"テストデータが見つかりました: {test_data}")            else:
+
                 print("テストデータが見つかりません。サンプル生成のみで評価を行います。")
-            else:
-                print(f"テストデータが見つかりました: {test_data}")
-            
-            # 評価の実行
-            eval_results = evaluate_model(
-                model=env["model"],
-                tokenizer=env["tokenizer"],
-                collator=env.get("collator"),
-                test_data=test_data,
-                device=env["device"]
-            )
-            
-            # 結果のサマリー表示
-            print("\n=== 評価結果サマリー ===")
-            if "perplexity" in eval_results:
-                print(f"パープレキシティ: {eval_results['perplexity']:.4f}")
-            
-            print(f"生成サンプル数: {len(eval_results.get('generated_texts', []))}")
-            print(f"マスク予測サンプル数: {len(eval_results.get('mask_predictions', []))}")
-            
-            # 結果の保存
-            result_path = "evaluation_results.json"
-            import json
-            with open(result_path, "w", encoding="utf-8") as f:
-                json.dump(eval_results, f, ensure_ascii=False, indent=2)
-            print(f"評価結果を保存しました: {result_path}")
+            if not test_data:                            test_data = jsonl_path if os.path.exists(jsonl_path) else None
+
+                jsonl_path = os.path.join(env.get("data_path", ""), "validation.jsonl")            if not test_data:                })
+        
+
+
+
+            # Arrow形式が見つからない場合はJSONLファイルを探す                        test_data = arrow_path if os.path.exists(arrow_path) else None        results["mask_predictions"] = mask_predictions
     
-    except Exception as e:
-        print(f"スクリプト実行中にエラーが発生しました: {str(e)}")
-        import traceback
-        traceback.print_exc()
+
+            arrow_path = os.path.join(env.get("data_path", ""), "test/data-00000-of-00001.arrow")    except Exception as e:
+
+
+            # テストデータのパス（Arrow形式ファイル）
+
+                        print("\n=== モデル評価を開始します ===")        if env.get("model") is not None and env.get("tokenizer") is not None:
+
+
+        # モデル評価を実行
+                    print(f"学習可能パラメータ数: {trainable_params:,}")
+
+            print(f"総パラメータ数: {total_params:,}")            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+            total_params = sum(p.numel() for p in model.parameters())
+            # パラメータ数のカウント                            print(f"埋め込み次元: {model.embedding_dim}")
+
+
+            if hasattr(model, "embedding_dim"):                        print(f"モデルタイプ: {type(model).__name__}")        print(f"マスク予測中にエラーが発生しました: {e}")
+
+
+            print("\n=== モデル情報 ===")            model = env.get('model')
+
+
+        if env.get('model') is not None:        # モデル情報の表示        
+
+        print(f"モデル: {'ロード成功' if env.get('model') is not None else 'ロード失敗'}")
+
+        print(f"トークナイザー: {'ロード成功' if env.get('tokenizer') is not None else 'ロード失敗'}")
+
+        print(f"モデルパス: {env.get('model_path', 'N/A')}")
+
+        print(f"データパス: {env.get('data_path', 'N/A')}")
+        print("\n=== 評価環境の準備が完了しました ===")                env = prepare_environment(vocab_size=32100)
+
+
+        # 評価環境を準備（語彙サイズ32100を指定）
+
+
+    try:if __name__ == "__main__":    return results            traceback.print_exc()        import traceback
