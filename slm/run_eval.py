@@ -93,7 +93,11 @@ def load_tokenizer(
         
         print(f"トークナイザーが正常にロードされました")
         print(f"語彙サイズ: {len(tokenizer)}")
-        
+
+        for i in range(31999, 32100)
+            decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
+            print(f"ID: {i} -> {decoded_text}")
+
         # マスクトークンの検出と設定
         # Why not: 異なるトークナイザーでは <mask> や [MASK] など様々な表記があるため
         # 複数の候補を試して適切なマスクトークンを検出する
@@ -128,39 +132,39 @@ def load_tokenizer(
         #         print("注意: 新しく追加されたトークンのため、モデルの埋め込み層の拡張が必要になる場合があります")
         
         # 動作確認 - マスクトークンをテスト
-        for test_text in ["<mask> かもしれない", "[MASK] かもしれない"]:
-            encoded = tokenizer.encode(test_text, add_special_tokens=False)
-            decoded = tokenizer.decode(encoded)
-            is_mask = encoded[0] == tokenizer.mask_token_id
-            print(f"「{test_text}」→ ID: {encoded[0]} {'✓' if is_mask else '✗'} → 「{decoded}」")
+#         for test_text in ["<mask> かもしれない", "[MASK] かもしれない"]:
+#             encoded = tokenizer.encode(test_text, add_special_tokens=False)
+#             decoded = tokenizer.decode(encoded)
+#             is_mask = encoded[0] == tokenizer.mask_token_id
+#             print(f"「{test_text}」→ ID: {encoded[0]} {'✓' if is_mask else '✗'} → 「{decoded}」")
         
-        # 特殊トークンの情報を表示
-        if hasattr(tokenizer, 'special_tokens_map'):
-            print(f"特殊トークン: {tokenizer.special_tokens_map}")
-        else:
-            # フォールバック：一般的な特殊トークンを個別に取得
-            special_tokens = {}
-            for token_name, token_attr in [
-                ("PAD", "pad_token"),
-                ("UNK", "unk_token"),
-                ("BOS", "bos_token"),
-                ("EOS", "eos_token"),
-                ("SEP", "sep_token"),
-                ("CLS", "cls_token"),
-                ("MASK", "mask_token")
-            ]:
-                if hasattr(tokenizer, token_attr):
-                    token_value = getattr(tokenizer, token_attr, None)
-                    if token_value is not None:
-                        special_tokens[token_name] = token_value
+#         # 特殊トークンの情報を表示
+#         if hasattr(tokenizer, 'special_tokens_map'):
+#             print(f"特殊トークン: {tokenizer.special_tokens_map}")
+#         else:
+#             # フォールバック：一般的な特殊トークンを個別に取得
+#             special_tokens = {}
+#             for token_name, token_attr in [
+#                 ("PAD", "pad_token"),
+#                 ("UNK", "unk_token"),
+#                 ("BOS", "bos_token"),
+#                 ("EOS", "eos_token"),
+#                 ("SEP", "sep_token"),
+#                 ("CLS", "cls_token"),
+#                 ("MASK", "mask_token")
+#             ]:
+#                 if hasattr(tokenizer, token_attr):
+#                     token_value = getattr(tokenizer, token_attr, None)
+#                     if token_value is not None:
+#                         special_tokens[token_name] = token_value
             
-            print(f"特殊トークン: {special_tokens}")
+#             print(f"特殊トークン: {special_tokens}")
         
-        return tokenizer
+#         return tokenizer
     
-    except Exception as e:
-        print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
-        return None
+#     except Exception as e:
+#         print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
+#         return None
 
 
 def prepare_environment() -> Dict[str, Any]:
