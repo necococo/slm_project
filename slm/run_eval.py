@@ -16,12 +16,7 @@ import shutil
 from pathlib import Path
 import time
 from typing import Optional, Union, Dict, Any
-
-# トークナイザーのロードに必要なインポート
-try:
-    from transformers import AutoTokenizer, PreTrainedTokenizer
-except ImportError:
-    print("transformersがインストールされていません。pip install transformers でインストールしてください。")
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
 
 def copy_data_to_fast_storage(
@@ -99,19 +94,29 @@ def load_tokenizer(
         print(f"トークナイザーが正常にロードされました")
         print(f"語彙サイズ: {len(tokenizer)}")
         
-        # 特殊トークンの情報を表示
-        special_tokens = {
-            name: token for name, token in [
-                ("PAD", tokenizer.pad_token),
-                ("UNK", tokenizer.unk_token),
-                ("BOS", tokenizer.bos_token),
-                ("EOS", tokenizer.eos_token),
-                ("SEP", tokenizer.sep_token if hasattr(tokenizer, "sep_token") else None),
-                ("CLS", tokenizer.cls_token if hasattr(tokenizer, "cls_token") else None),
-                ("MASK", tokenizer.mask_token if hasattr(tokenizer, "mask_token") else None)
-            ] if token is not None
-        }
-        print(f"特殊トークン: {special_tokens}")
+        # 特殊トークンの情報を表示（改善版）
+        # Why not: 個別の属性アクセスではなく、専用メソッドやプロパティから一括取得する方が確実
+        if hasattr(tokenizer, 'special_tokens_map'):
+            # 多くのHuggingFaceトークナイザーはspecial_tokens_mapプロパティを持つ
+            print(f"特殊トークン: {tokenizer.special_tokens_map}")
+        else:
+            # フォールバック：一般的な特殊トークンを個別に取得
+            special_tokens = {}
+            for token_name, token_attr in [
+                ("PAD", "pad_token"),
+                ("UNK", "unk_token"),
+                ("BOS", "bos_token"),
+                ("EOS", "eos_token"),
+                ("SEP", "sep_token"),
+                ("CLS", "cls_token"),
+                ("MASK", "mask_token")
+            ]:
+                if hasattr(tokenizer, token_attr):
+                    token_value = getattr(tokenizer, token_attr, None)
+                    if token_value is not None:
+                        special_tokens[token_name] = token_value
+            
+            print(f"特殊トークン: {special_tokens}")
         
         return tokenizer
     
