@@ -93,82 +93,148 @@ def load_tokenizer(
             
             print(f"トークナイザーが正常にロードされました")
             print(f"語彙サイズ: {len(tokenizer)}")
-
-            for i in range(31999, 32101):
-                decoded_text = tokenizer.decode(i, skip_special_tokens=True)
-                print(f"ID: {i} -> {decoded_text}")
+            
+            # マスクトークンの存在確認
+            has_mask_token = hasattr(tokenizer, 'mask_token') and tokenizer.mask_token is not None
+            
+            if not has_mask_token:
+                print("マスクトークンが存在しません。")
+                
+                # 特定の範囲のIDに対応するトークンを確認（デバッグ用）
+                print("\n特定範囲のトークンID確認:")
+                for i in range(31990, 32020):
+                    if i < len(tokenizer):
+                        decoded_text = tokenizer.decode([i], skip_special_tokens=False)
+                        print(f"ID: {i} -> '{decoded_text}'")
+                
+                # マスクトークンを追加
+                print("\nマスクトークンを追加します...")
+                # トークナイザーのタイプによって異なる処理
+                if hasattr(tokenizer, "add_special_tokens"):
+                    tokenizer.add_special_tokens({'mask_token': '<mask>'})
+                    print(f"マスクトークン '<mask>' を追加しました。マスクトークンID: {tokenizer.mask_token_id}")
+                else:
+                    print("このトークナイザーはadd_special_tokensメソッドをサポートしていません。")
+            else:
+                print(f"マスクトークンが存在します: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+            
             return tokenizer
     
         except Exception as e:
             print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
             return None
-        # マスクトークンの検出と設定
-        # Why not: 異なるトークナイザーでは <mask> や [MASK] など様々な表記があるため
-        # 複数の候補を試して適切なマスクトークンを検出する
-        # mask_token_candidates = ['<mask>', '[MASK]']
-        # mask_token_ids = {}
-        
-        # # マスクトークン候補のIDを取得
-        # for mask_candidate in mask_token_candidates:
-        #     candidate_id = tokenizer.convert_tokens_to_ids(mask_candidate)
-        #     # if candidate_id != tokenizer.unk_token_id:  # 未知トークンIDではない場合
-        #     mask_token_ids[mask_candidate] = candidate_id
-        #     print(f"{tokenizer.unk_token_id=}")
-        #     print(f"マスクトークン候補 '{mask_candidate}' のID: {candidate_id}")
 
-        
-        # # 既存のマスクトークン属性を確認
-        # has_mask_token = hasattr(tokenizer, 'mask_token') and tokenizer.mask_token is not None
-        # if has_mask_token:
-        #     print(f"既存のマスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
-        
-        # # マスクトークンの設定
-        # if not has_mask_token:
-        #     if mask_token_ids:
-        #         # 最初に見つかった有効なマスクトークンを使用
-        #         best_mask, best_id = next(iter(mask_token_ids.items()))
-        #         tokenizer.add_special_tokens({'mask_token': best_mask})
-        #         print(f"マスクトークン '{best_mask}' を設定しました。ID: {tokenizer.mask_token_id}")
-        #     else:
-        #         # マスクトークン候補が見つからない場合、新しく追加
-        #         tokenizer.add_special_tokens({'mask_token': '<mask>'})
-        #         print(f"マスクトークン '<mask>' を追加しました。ID: {tokenizer.mask_token_id}")
-        #         print("注意: 新しく追加されたトークンのため、モデルの埋め込み層の拡張が必要になる場合があります")
-        
-        # 動作確認 - マスクトークンをテスト
-#         for test_text in ["<mask> かもしれない", "[MASK] かもしれない"]:
-#             encoded = tokenizer.encode(test_text, add_special_tokens=False)
-#             decoded = tokenizer.decode(encoded)
-#             is_mask = encoded[0] == tokenizer.mask_token_id
-#             print(f"「{test_text}」→ ID: {encoded[0]} {'✓' if is_mask else '✗'} → 「{decoded}」")
-        
-#         # 特殊トークンの情報を表示
-#         if hasattr(tokenizer, 'special_tokens_map'):
-#             print(f"特殊トークン: {tokenizer.special_tokens_map}")
-#         else:
-#             # フォールバック：一般的な特殊トークンを個別に取得
-#             special_tokens = {}
-#             for token_name, token_attr in [
-#                 ("PAD", "pad_token"),
-#                 ("UNK", "unk_token"),
-#                 ("BOS", "bos_token"),
-#                 ("EOS", "eos_token"),
-#                 ("SEP", "sep_token"),
-#                 ("CLS", "cls_token"),
-#                 ("MASK", "mask_token")
-#             ]:
-#                 if hasattr(tokenizer, token_attr):
-#                     token_value = getattr(tokenizer, token_attr, None)
-#                     if token_value is not None:
-#                         special_tokens[token_name] = token_value
-            
-#             print(f"特殊トークン: {special_tokens}")
-        
-        # return tokenizer
+
+def evaluate_mask_token(tokenizer: PreTrainedTokenizer) -> Dict[str, Any]:
+    """
+    マスクトークンの機能を評価します。
     
-#     except Exception as e:
-#         print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
-#         return None
+    Args:
+        tokenizer: 評価対象のトークナイザー
+        
+    Returns:
+        Dict[str, Any]: 評価結果
+    
+    How:
+        - マスクトークンの有無を確認
+        - マスクトークンのエンコード・デコード動作をテスト
+        - 様々なマスクパターンを試行
+    """
+    results = {
+        "has_mask_token": False,
+        "mask_token": None,
+        "mask_token_id": None,
+        "encoding_tests": [],
+        "collator_compatible": False
+    }
+    
+    # マスクトークンの確認
+    has_mask_token = hasattr(tokenizer, 'mask_token') and tokenizer.mask_token is not None
+    results["has_mask_token"] = has_mask_token
+    
+    if has_mask_token:
+        results["mask_token"] = tokenizer.mask_token
+        results["mask_token_id"] = tokenizer.mask_token_id
+        print(f"マスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+    else:
+        print("マスクトークンが存在しません")
+        return results
+    
+    # エンコード・デコードテスト
+    test_cases = [
+        f"{tokenizer.mask_token}かもしれない",
+        f"これは{tokenizer.mask_token}テストです",
+        f"複数の{tokenizer.mask_token}を{tokenizer.mask_token}テスト"
+    ]
+    
+    print("\nマスクトークンのエンコード・デコードテスト:")
+    for test in test_cases:
+        encoded = tokenizer.encode(test, add_special_tokens=False)
+        decoded = tokenizer.decode(encoded)
+        
+        # マスクトークンIDが含まれているか確認
+        contains_mask = tokenizer.mask_token_id in encoded
+        
+        result = {
+            "text": test,
+            "encoded": encoded,
+            "decoded": decoded,
+            "contains_mask_token": contains_mask
+        }
+        results["encoding_tests"].append(result)
+        
+        print(f"テスト: '{test}'")
+        print(f"エンコード: {encoded}")
+        print(f"デコード: '{decoded}'")
+        print(f"マスクトークン含有: {'✓' if contains_mask else '✗'}")
+        print("-" * 40)
+    
+    # CustomCollatorとの互換性テスト
+    try:
+        from types import SimpleNamespace
+        from slm.collator import CustomCollator
+        
+        # モデル設定のモック
+        mock_config = SimpleNamespace(max_seq_len=128)
+        
+        # サンプルデータ
+        test_text = f"これは{tokenizer.mask_token}テストです。"
+        encoded = tokenizer.encode(test_text)
+        test_sample = {
+            "input_ids": encoded,
+            "attention_mask": [1] * len(encoded)
+        }
+        
+        # Collatorの初期化
+        collator = CustomCollator(
+            tokenizer=tokenizer,
+            model_config=mock_config,
+            mlm=True,
+            mlm_probability=0.15
+        )
+        
+        # バッチ処理
+        batch = collator([test_sample])
+        
+        # マスクトークンがあるか確認
+        mask_count = (batch["input_ids"] == tokenizer.mask_token_id).sum().item()
+        
+        results["collator_compatible"] = True
+        results["mask_count"] = mask_count
+        
+        print("\nCollatorテスト:")
+        print(f"入力テキスト: '{test_text}'")
+        print(f"バッチ形状: {batch['input_ids'].shape}")
+        print(f"マスクされたトークン数: {mask_count}")
+        
+    except ImportError:
+        print("\nslm.collatorモジュールをインポートできませんでした。")
+        results["collator_error"] = "Module not found"
+    except Exception as e:
+        print(f"\nCollatorテストでエラーが発生しました: {str(e)}")
+        results["collator_error"] = str(e)
+    
+    return results
 
 
 def prepare_environment() -> Dict[str, Any]:
@@ -189,6 +255,12 @@ def prepare_environment() -> Dict[str, Any]:
     tokenizer = load_tokenizer(tokenizer_path)
     result["tokenizer"] = tokenizer
     
+    # マスクトークンの評価
+    if tokenizer is not None:
+        print("\n=== マスクトークンの評価 ===")
+        mask_evaluation = evaluate_mask_token(tokenizer)
+        result["mask_evaluation"] = mask_evaluation
+    
     return result
 
 
@@ -199,5 +271,16 @@ if __name__ == "__main__":
         print("\n評価環境の準備が完了しました。")
         print(f"データパス: {env.get('data_path', 'N/A')}")
         print(f"トークナイザー: {'ロード成功' if env.get('tokenizer') is not None else 'ロード失敗'}")
+        
+        # マスク評価結果のサマリー
+        if "mask_evaluation" in env:
+            eval_result = env["mask_evaluation"]
+            print("\n=== マスクトークン評価サマリー ===")
+            print(f"マスクトークン存在: {'あり' if eval_result.get('has_mask_token') else 'なし'}")
+            if eval_result.get('has_mask_token'):
+                print(f"マスクトークン: {eval_result.get('mask_token')} (ID: {eval_result.get('mask_token_id')})")
+            print(f"Collator互換性: {'✓' if eval_result.get('collator_compatible') else '✗'}")
+            if 'collator_error' in eval_result:
+                print(f"Collatorエラー: {eval_result['collator_error']}")
     except Exception as e:
         print(f"スクリプト実行中にエラーが発生しました: {str(e)}")
