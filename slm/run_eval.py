@@ -137,8 +137,9 @@ def load_model(
         Optional[Any]: ロードされたモデル
     
     How:
-        モデル重みをロードし、シンプルなデフォルト設定で
-        WaveNetworkモデルを初期化します。
+        モデル重みをロードし、必要な設定でWaveNetworkモデルを初期化します。
+        WaveNetworkLMクラスはコンストラクタにconfigパラメータが必須のため、
+        必要な構成情報を提供します。
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -152,15 +153,29 @@ def load_model(
     try:
         print(f"モデル重みをロードしています: {model_file}")
         
-        # 重みをロード (weights_only=Falseでモデル全体をロード)
-        checkpoint = torch.load(str(model_file), map_location="cpu", weights_only=False)
+        # 重みをロード
+        checkpoint = torch.load(str(model_file), map_location="cpu")
         
         # WaveNetworkモデルをインポートして初期化
         from slm.modules.wave_network import WaveNetworkLM
+        from types import SimpleNamespace
         
-        # デフォルトパラメータでモデル初期化
-        model = WaveNetworkLM()
+        # 必要な設定を作成
+        # Why not: WaveNetworkLM.__init__()にはconfigパラメータが必須のため、
+        # SimpleNamespaceで必要な設定を提供
+        config = SimpleNamespace(
+            embedding_dim=1024,   # 一般的な埋め込み次元
+            # complex_dim=1024,     # 複素次元（埋め込み次元と同じ値）
+            num_layers=3,         # レイヤー数
+            vocab_size=32101,     # マスクトークン追加済みの語彙サイズ
+            max_seq_len=512       # 最大シーケンス長
+        )
+        
+        # configを渡してモデルを初期化
+        model = WaveNetworkLM(config)
         print("モデルを初期化しました")
+        print(f"モデル設定: embedding_dim={config.embedding_dim}, "
+              f"num_layers={config.num_layers}, vocab_size={config.vocab_size}, max_seq_len={config.max_seq_len}")
         
         # 重みを読み込む
         model.load_state_dict(checkpoint, strict=False)
@@ -174,6 +189,8 @@ def load_model(
         
     except Exception as e:
         print(f"モデルのロード中にエラーが発生しました: {str(e)}")
+        import traceback
+        traceback.print_exc()  # デバッグ情報を出力
         return None
 
 
