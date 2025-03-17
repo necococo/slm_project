@@ -18,6 +18,9 @@ import time
 from typing import Optional, Dict, Any, Tuple
 import torch
 from transformers import AutoTokenizer, PreTrainedTokenizer
+import numpy as np
+import torch.nn.functional as F
+from tqdm import tqdm
 
 
 def copy_data_to_fast_storage(
@@ -112,8 +115,17 @@ def load_tokenizer(
         mask_token_id = None
         
         if not has_mask_token and add_mask_token:
+            # トークナイザーの実際の語彙サイズを取得し、base_vocab_sizeを上書き
+            # Why not: 実際のモデルパラメータに合わせる必要があるため
+            actual_vocab_size = len(tokenizer)
+            if actual_vocab_size != base_vocab_size:
+                print(f"警告: トークナイザーの語彙サイズ({actual_vocab_size})がベース語彙サイズ({base_vocab_size})と異なります")
+                # モデルの語彙サイズ以下でトークナイザーの語彙サイズ以下の値に調整
+                base_vocab_size = min(base_vocab_size, actual_vocab_size)
+                print(f"使用する語彙サイズを {base_vocab_size} に調整します")
+            
             # 語彙サイズを維持するため、最後のトークンをマスクトークンと入れ替え
-            last_token_id = min(base_vocab_size - 1, original_vocab_size - 1)
+            last_token_id = base_vocab_size - 1
             
             # 元の最後のトークンの情報を取得
             last_token = tokenizer.convert_ids_to_tokens(last_token_id)
@@ -220,11 +232,11 @@ def load_model(
         from types import SimpleNamespace
         
         # 必要な設定を作成
-        # Why not: 語彙サイズは固定サイズを使用し、
-        # マスクトークンは既存の語彙内のトークンと入れ替えているため、
-        # 語彙サイズを増やす必要がありません
+        # トークナイザーの語彙サイズとモデルの語彙サイズを一致させる
+        print(f"モデル初期化時の語彙サイズ: {vocab_size}")
+        
         config = SimpleNamespace(
-            vocab_size=vocab_size,    # 基本語彙サイズを固定で使用
+            vocab_size=vocab_size,    # 指定された語彙サイズを使用
             hidden_size=1024,         # 隠れ層サイズ
             num_layers=3,             # レイヤー数
             max_seq_len=512,          # 最大シーケンス長
@@ -259,7 +271,8 @@ def load_model(
 def prepare_environment(
     data_path: str = "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
     model_path: str = "/content/drive/MyDrive/slm_outputs/slm_1024h_3l/checkpoints/diffusion_step_150.pt",
-    target_path: str = "/content/fast_data/"
+    target_path: str = "/content/fast_data/",
+    vocab_size: int = 32000
 ) -> Dict[str, Any]:
     """
     評価環境を準備します。データコピー、トークナイザーとモデルのロードを行います。
@@ -268,6 +281,7 @@ def prepare_environment(
         data_path: データのパス
         model_path: モデル重みファイルのパス
         target_path: コピー先のパス
+        vocab_size: 基本語彙サイズ
         
     Returns:
         Dict[str, Any]: 環境設定の結果情報
@@ -283,26 +297,35 @@ def prepare_environment(
     copied_data_path = copy_data_to_fast_storage(data_path, target_path)
     result["data_path"] = copied_data_path
     
-    # 基本語彙サイズ = 32000
-    base_vocab_size = 32000
-    
-    # トークナイザーをロード（基本語彙サイズを渡す）
+    # トークナイザーをロード（指定された語彙サイズを渡す）
     tokenizer_path = os.path.join(copied_data_path, "tokenizers")
     tokenizer, mask_token_id = load_tokenizer(
         tokenizer_path, 
         add_mask_token=True, 
-        base_vocab_size=base_vocab_size
+        base_vocab_size=vocab_size
     )
     result["tokenizer"] = tokenizer
+    
+    # トークナイザーがロードできた場合、実際の語彙サイズをチェックして調整
+    actual_vocab_size = vocab_size
+    if tokenizer is not None:
+        # マスクトークンが最後の位置にある場合は元の語彙サイズを使用
+        if mask_token_id is not None and mask_token_id == vocab_size - 1:
+            actual_vocab_size = vocab_size
+        else:
+            # それ以外の場合はトークナイザーの語彙サイズに合わせる
+            actual_vocab_size = min(len(tokenizer), vocab_size)
+        
+        print(f"モデル初期化に使用する語彙サイズ: {actual_vocab_size}")
     
     # モデルをコピー
     copied_model_path = copy_data_to_fast_storage(model_path, target_path)
     result["model_path"] = copied_model_path
     
-    # モデルをロード（マスクトークンIDと基本語彙サイズを渡す）
+    # モデルをロード（調整した語彙サイズを渡す）
     model = load_model(
         copied_model_path, 
-        vocab_size=base_vocab_size,
+        vocab_size=actual_vocab_size,
         mask_token_id=mask_token_id,
         device=device
     )
@@ -330,10 +353,209 @@ def prepare_environment(
     return result
 
 
+def evaluate_model(
+    model: Any,
+    tokenizer: PreTrainedTokenizer,
+    collator: Any,
+    test_data: Optional[str] = None,
+    num_examples: int = 10,
+    batch_size: int = 4,
+    device: Optional[torch.device] = None,
+    max_length: int = 512
+) -> Dict[str, Any]:
+    """
+    モデルを評価し、パープレキシティやサンプル生成を行います。
+    
+    Args:
+        model: 評価対象のモデル
+        tokenizer: トークナイザー
+        collator: データコレーター
+        test_data: テストデータのパス (Noneの場合はサンプル文のみ評価)
+        num_examples: 生成するサンプル例の数
+        batch_size: バッチサイズ
+        device: 実行デバイス
+        max_length: 最大シーケンス長
+        
+    Returns:
+        Dict[str, Any]: 評価結果を含む辞書
+    
+    How:
+        - サンプルプロンプトからテキスト生成を行う
+        - テストデータから損失とパープレキシティを計算する
+        - マスク単語予測の精度を評価する
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    model.eval()  # 評価モードに設定
+    results = {}
+    
+    # サンプルプロンプトの定義
+    sample_prompts = [
+        "こんにちは、私の名前は",
+        "今日の天気は",
+        "日本の首都は",
+        "人工知能の研究は",
+        "大規模言語モデルとは"
+    ]
+    
+    # テキスト生成による評価
+    print("\n=== テキスト生成評価 ===")
+    generated_texts = []
+    
+    for prompt in sample_prompts[:num_examples]:
+        print(f"\nプロンプト: {prompt}")
+        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+        
+        # 生成パラメータ
+        gen_length = min(max_length - input_ids.shape[1], 50)  # 生成する最大トークン数
+        
+        # 実際の生成処理
+        with torch.no_grad():
+            # 単純な自己回帰生成
+            for _ in range(gen_length):
+                # フォワードパス
+                outputs = model(input_ids)
+                next_token_logits = outputs[:, -1, :]
+                
+                # 次のトークンを選択（温度ありのサンプリング）
+                temperature = 0.7
+                probs = F.softmax(next_token_logits / temperature, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                
+                # 生成シーケンスを拡張
+                input_ids = torch.cat([input_ids, next_token], dim=1)
+                
+                # EOSトークンが生成されたら終了
+                if next_token.item() == tokenizer.eos_token_id:
+                    break
+        
+        # 生成されたテキストをデコード
+        generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        print(f"生成結果: {generated_text}")
+        generated_texts.append({"prompt": prompt, "generated": generated_text})
+    
+    results["generated_texts"] = generated_texts
+    
+    # テストデータがある場合、パープレキシティを計算
+    if test_data is not None:
+        try:
+            print("\n=== パープレキシティ評価 ===")
+            # テストデータのロード
+            import json
+            from torch.utils.data import Dataset, DataLoader
+            
+            class SimpleDataset(Dataset):
+                def __init__(self, texts, tokenizer, max_length):
+                    self.examples = []
+                    for text in texts:
+                        encoding = tokenizer(
+                            text,
+                            truncation=True,
+                            max_length=max_length,
+                            return_tensors="pt"
+                        )
+                        self.examples.append({
+                            "input_ids": encoding["input_ids"][0],
+                            "attention_mask": encoding["attention_mask"][0]
+                        })
+                
+                def __len__(self):
+                    return len(self.examples)
+                
+                def __getitem__(self, idx):
+                    return self.examples[idx]
+            
+            # テストデータのロードと準備
+            with open(test_data, "r", encoding="utf-8") as f:
+                test_texts = [json.loads(line)["text"] for line in f][:100]  # 最初の100サンプルのみ使用
+            
+            print(f"テストデータを{len(test_texts)}サンプルロードしました")
+            test_dataset = SimpleDataset(test_texts, tokenizer, max_length)
+            test_dataloader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=collator)
+            
+            # パープレキシティ計算
+            total_loss = 0.0
+            total_length = 0
+            
+            with torch.no_grad():
+                for batch in tqdm(test_dataloader, desc="パープレキシティ計算"):
+                    input_ids = batch["input_ids"].to(device)
+                    attention_mask = batch["attention_mask"].to(device)
+                    labels = batch["labels"].to(device)
+                    
+                    outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+                    loss = outputs.loss.item()
+                    
+                    # 有効なトークン数（-100でないラベル）を計算
+                    valid_tokens = (labels != -100).sum().item()
+                    
+                    total_loss += loss * valid_tokens
+                    total_length += valid_tokens
+            
+            avg_loss = total_loss / total_length if total_length > 0 else float('inf')
+            perplexity = np.exp(avg_loss)
+            
+            print(f"テストセットのパープレキシティ: {perplexity:.4f}")
+            results["perplexity"] = perplexity
+            results["loss"] = avg_loss
+        
+        except Exception as e:
+            print(f"パープレキシティ計算中にエラーが発生しました: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # マスク単語予測の評価
+    try:
+        print("\n=== マスク単語予測評価 ===")
+        mask_examples = [
+            f"日本の首都は{tokenizer.mask_token}です。",
+            f"{tokenizer.mask_token}は美しい島国です。",
+            f"人工知能の研究は{tokenizer.mask_token}分野で行われています。",
+            f"{tokenizer.mask_token}が開発した相対性理論は物理学に革命をもたらした。"
+        ]
+        
+        mask_predictions = []
+        
+        for example in mask_examples:
+            print(f"\n入力文: {example}")
+            inputs = tokenizer(example, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # マスク位置を特定
+            mask_positions = (inputs["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1]
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+            
+            # 各マスク位置で予測
+            for pos in mask_positions:
+                mask_logits = logits[0, pos, :]
+                topk = torch.topk(mask_logits, k=5)
+                topk_tokens = [tokenizer.decode([idx]) for idx in topk.indices]
+                topk_probs = topk.values.softmax(dim=-1).cpu().numpy()
+                
+                print(f"予測トップ5: {list(zip(topk_tokens, topk_probs.tolist()))}")
+                mask_predictions.append({
+                    "text": example,
+                    "predictions": [{"token": t, "prob": float(p)} for t, p in zip(topk_tokens, topk_probs)]
+                })
+        
+        results["mask_predictions"] = mask_predictions
+    
+    except Exception as e:
+        print(f"マスク予測中にエラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return results
+
+
 if __name__ == "__main__":
     try:
-        # 評価環境を準備
-        env = prepare_environment()
+        # 評価環境を準備（語彙サイズ32100を指定）
+        env = prepare_environment(vocab_size=32100)
         
         print("\n=== 評価環境の準備が完了しました ===")
         print(f"データパス: {env.get('data_path', 'N/A')}")
@@ -355,6 +577,44 @@ if __name__ == "__main__":
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print(f"総パラメータ数: {total_params:,}")
             print(f"学習可能パラメータ数: {trainable_params:,}")
+        
+        # モデル評価を実行
+        if env.get("model") is not None and env.get("tokenizer") is not None:
+            print("\n=== モデル評価を開始します ===")
+            
+            # テストデータのパス (存在する場合)
+            test_data_path = os.path.join(env.get("data_path", ""), "validation.jsonl")
+            test_data = test_data_path if os.path.exists(test_data_path) else None
+            
+            if not test_data:
+                print(f"テストデータが見つかりません: {test_data_path}")
+                print("サンプル生成のみで評価を行います。")
+            
+            # 評価の実行
+            eval_results = evaluate_model(
+                model=env["model"],
+                tokenizer=env["tokenizer"],
+                collator=env.get("collator"),
+                test_data=test_data,
+                device=env["device"]
+            )
+            
+            # 結果のサマリー表示
+            print("\n=== 評価結果サマリー ===")
+            if "perplexity" in eval_results:
+                print(f"パープレキシティ: {eval_results['perplexity']:.4f}")
+            
+            print(f"生成サンプル数: {len(eval_results.get('generated_texts', []))}")
+            print(f"マスク予測サンプル数: {len(eval_results.get('mask_predictions', []))}")
+            
+            # 結果の保存
+            result_path = "evaluation_results.json"
+            import json
+            with open(result_path, "w", encoding="utf-8") as f:
+                json.dump(eval_results, f, ensure_ascii=False, indent=2)
+            print(f"評価結果を保存しました: {result_path}")
     
     except Exception as e:
         print(f"スクリプト実行中にエラーが発生しました: {str(e)}")
+        import traceback
+        traceback.print_exc()
