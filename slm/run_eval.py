@@ -94,7 +94,7 @@ def load_tokenizer(
         print(f"トークナイザーが正常にロードされました")
         print(f"語彙サイズ: {len(tokenizer)}")
 
-        for i in range(31999, 32100)
+        for i in range(31999, 32100):
             decoded_text = tokenizer.decode(tokens_ids, skip_special_tokens=True)
             print(f"ID: {i} -> {decoded_text}")
 
