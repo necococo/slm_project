@@ -280,26 +280,22 @@ def generate_samples(model, dataset, tokenizer, device, max_new_tokens=32, tempe
         input_ids = sample["input_ids"].to(device).unsqueeze(0)
         
         # 入力テキスト (トークナイザーで戻す)
-        prefix = sample["text"][:100] + "..." if len(sample["text"]) > 100 else sample["text"]
+        if tokenizer and hasattr(tokenizer, 'decode'):
+            prefix = tokenizer.decode(sample["input_ids"], skip_special_tokens=True)
+            # 長すぎる場合は省略
+            if len(prefix) > 100:
+                prefix = prefix[:100] + "..."
+        else:
+            # トークナイザーがない場合はテキストをそのまま使用
+            prefix = sample["text"][:100] + "..." if len(sample["text"]) > 100 else sample["text"]
         
-        # 生成
+        # テキスト生成（トークナイザーを渡す）
         with torch.no_grad():
-            generated = temperature_sampling_decode(
-                model, input_ids, max_new_tokens, device, temperature
+            generated_text = temperature_sampling_decode(
+                model, input_ids, max_new_tokens, device, 
+                temperature=temperature,
+                tokenizer=tokenizer  # トークナイザーを渡す
             )
-        
-        # トークン列をテキストに変換
-        tokens = generated.split()
-        # 最初の入力長の部分をスキップ
-        input_length = len(input_ids[0])
-        gen_tokens = tokens[input_length:]
-        
-        # トークナイザーでデコード
-        try:
-            generated_text = tokenizer.decode([int(t) for t in gen_tokens])
-        except:
-            # 数値変換失敗時
-            generated_text = " ".join(gen_tokens)
         
         results.append({
             "prefix": prefix,
