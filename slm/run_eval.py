@@ -94,10 +94,17 @@ def load_tokenizer(
         print(f"トークナイザーが正常にロードされました")
         print(f"語彙サイズ: {len(tokenizer)}")
         
-        # 特殊トークンの情報を表示（改善版）
-        # Why not: 個別の属性アクセスではなく、専用メソッドやプロパティから一括取得する方が確実
+        # マスクトークンが存在しない場合は追加
+        # Why not: MLMタスクなどではマスクトークンが必須なため、
+        # 明示的に追加して後続処理での問題を防止します
+        if not hasattr(tokenizer, 'mask_token') or tokenizer.mask_token is None:
+            tokenizer.add_special_tokens({'mask_token': '<mask>'})
+            print(f"マスクトークン '<mask>' を追加しました。マスクトークンID: {tokenizer.mask_token_id}")
+        else:
+            print(f"マスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+        
+        # 特殊トークンの情報を表示
         if hasattr(tokenizer, 'special_tokens_map'):
-            # 多くのHuggingFaceトークナイザーはspecial_tokens_mapプロパティを持つ
             print(f"特殊トークン: {tokenizer.special_tokens_map}")
         else:
             # フォールバック：一般的な特殊トークンを個別に取得
