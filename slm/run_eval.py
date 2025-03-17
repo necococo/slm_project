@@ -160,7 +160,7 @@ def load_tokenizer(
             
 #             print(f"特殊トークン: {special_tokens}")
         
-#         return tokenizer
+        return tokenizer
     
 #     except Exception as e:
 #         print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
