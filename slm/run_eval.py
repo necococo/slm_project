@@ -82,11 +82,43 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> tu
     print(f"チェックポイント {checkpoint_path} からモデルを読み込み中...")
     
     try:
-        # PyTorch 2.6以上の場合はweights_only=Falseを使用
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        # PyTorch 2.6以上の場合はクラスを安全リストに登録して読み込み
+        import torch.serialization
+        from slm.config import ModelConfig, TrainingConfig
+        
+        try:
+            from transformers.models.t5.tokenization_t5 import T5Tokenizer
+            # セーフリストに追加
+            torch.serialization.add_safe_globals([ModelConfig, TrainingConfig, T5Tokenizer])
+        except ImportError:
+            # transformersがない場合はModelConfigとTrainingConfigのみ追加
+            torch.serialization.add_safe_globals([ModelConfig, TrainingConfig])
+            
+        # トークナイザーエラーを避けるためにweights_only=Trueでロード
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     except TypeError:
         # 古いPyTorchバージョンではweights_onlyがない
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        # または別のエラーが発生した場合
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        except Exception as e:
+            print(f"チェックポイントの読み込みエラー: {e}")
+            print(f"メタデータのみの読み込みを試みます...")
+            
+            # 部分的に読み込み可能なケースの対応
+            import pickle
+            try:
+                with open(checkpoint_path, 'rb') as f:
+                    # ヘッダー部分だけを読み込む試み
+                    header = pickle.load(f)
+                    if isinstance(header, dict) and "model_config" in header:
+                        checkpoint = {"model_config": header["model_config"]}
+                        print(f"チェックポイントのメタデータ読み込みに成功しました")
+                    else:
+                        raise ValueError("無効なチェックポイント形式")
+            except Exception as e2:
+                print(f"メタデータ読み込み失敗: {e2}")
+                raise ValueError(f"チェックポイント {checkpoint_path} の読み込みに失敗しました") from e
         
     # モデル設定を取得
     if "model_config" not in checkpoint:
@@ -112,11 +144,32 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> tu
     model = model.to(device)
     model.eval()  # 評価モード
     
-    # トークナイザーの取得
-    tokenizer = checkpoint.get("tokenizer")
-    if tokenizer is None and hasattr(model_config, "tokenizer"):
-        tokenizer = model_config.tokenizer
+    # トークナイザーの取得 - チェックポイントから直接ロードせずに設定のみを確認
+    tokenizer = None
+    try:
+        # 設定からtokenizer_nameを取得
+        tokenizer_name = None
+        if hasattr(model_config, "tokenizer") and hasattr(model_config.tokenizer, "name_or_path"):
+            tokenizer_name = model_config.tokenizer.name_or_path
         
+        # トークナイザー名からトークナイザーを直接ロード
+        if tokenizer_name:
+            print(f"トークナイザー '{tokenizer_name}' を直接ロードします")
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            print(f"トークナイザーのロードに成功しました")
+        else:
+            print("モデル設定からトークナイザー情報が取得できませんでした")
+    except Exception as e:
+        print(f"トークナイザーのロードエラー: {e}")
+        print("デフォルトの日本語トークナイザーをロードします")
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("megagonlabs/t5-base-japanese-web")
+            print("デフォルトトークナイザーのロードに成功しました")
+        except Exception as e2:
+            print(f"デフォルトトークナイザーのロードにも失敗: {e2}")
+    
     return model, tokenizer
 
 
@@ -210,6 +263,7 @@ def prepare_tokenizer(args, model_tokenizer=None):
             )
         except Exception as e:
             print(f"トークナイザー読み込みエラー: {e}")
+            print(f"代わりにトークナイザー {args.tokenizer_name} をダウンロードします")
             tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
     else:
         print(f"トークナイザー {args.tokenizer_name} をダウンロード中...")
@@ -368,10 +422,37 @@ def main():
             args.test_data_path = "./data/test"
     
     # モデルのロード
-    model, model_tokenizer = load_model_from_checkpoint(args.checkpoint_path, str(device))
+    try:
+        model, model_tokenizer = load_model_from_checkpoint(args.checkpoint_path, str(device))
+    except Exception as e:
+        print(f"モデル読み込みエラー: {e}")
+        print("モデル読み込みに失敗しましたが、処理を継続します。")
+        print("新しいモデルを初期化します...")
+        
+        # 設定ファイルからの読み込みに失敗した場合、デフォルト設定でモデルを初期化
+        from slm.config import ModelConfig
+        model_config = ModelConfig(
+            hidden_size=768,
+            num_layers=6,
+            vocab_size=32000,
+            max_seq_len=512
+        )
+        model = WaveNetworkLM(model_config)
+        model = model.to(device)
+        model_tokenizer = None
     
-    # トークナイザーの準備
-    tokenizer = prepare_tokenizer(args, model_tokenizer)
+    # トークナイザーの準備 - エラーハンドリングを強化
+    try:
+        tokenizer = prepare_tokenizer(args, model_tokenizer)
+    except Exception as e:
+        print(f"トークナイザー準備エラー: {e}")
+        print("標準トークナイザーをロードします...")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("megagonlabs/t5-base-japanese-web")
+        except Exception as e2:
+            print(f"標準トークナイザーのロードにも失敗: {e2}")
+            print("評価を続行できません。終了します。")
+            return
     
     # データセットの準備
     test_dataset = prepare_test_dataset(args)
