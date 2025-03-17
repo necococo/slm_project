@@ -127,7 +127,7 @@ def load_tokenizer(
         #         print(f"マスクトークン '<mask>' を追加しました。ID: {tokenizer.mask_token_id}")
         #         print("注意: 新しく追加されたトークンのため、モデルの埋め込み層の拡張が必要になる場合があります")
         
-        動作確認 - マスクトークンをテスト
+        # 動作確認 - マスクトークンをテスト
         for test_text in ["<mask> かもしれない", "[MASK] かもしれない"]:
             encoded = tokenizer.encode(test_text, add_special_tokens=False)
             decoded = tokenizer.decode(encoded)
