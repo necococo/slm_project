@@ -53,9 +53,7 @@ def copy_data_to_fast_storage(
     else:
         shutil.copytree(source_path, full_target_path)
         print(f"データをコピーしました: {source_path} -> {full_target_path}")        
-    except Exception as e:
-        print(f"エラーが発生しました: {str(e)}")
-        raise
+
 
 
 if __name__ == "__main__":
