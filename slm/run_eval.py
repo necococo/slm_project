@@ -105,7 +105,7 @@ def load_tokenizer(
             candidate_id = tokenizer.convert_tokens_to_ids(mask_candidate)
             # if candidate_id != tokenizer.unk_token_id:  # 未知トークンIDではない場合
             mask_token_ids[mask_candidate] = candidate_id
-             print(f"{tokenizer.unk_token_id=}")
+            print(f"{tokenizer.unk_token_id=}")
             print(f"マスクトークン候補 '{mask_candidate}' のID: {candidate_id}")
 
         
