@@ -97,22 +97,22 @@ def load_tokenizer(
         # マスクトークンの検出と設定
         # Why not: 異なるトークナイザーでは <mask> や [MASK] など様々な表記があるため
         # 複数の候補を試して適切なマスクトークンを検出する
-        mask_token_candidates = ['<mask>', '[MASK]']
-        mask_token_ids = {}
+        # mask_token_candidates = ['<mask>', '[MASK]']
+        # mask_token_ids = {}
         
-        # マスクトークン候補のIDを取得
-        for mask_candidate in mask_token_candidates:
-            candidate_id = tokenizer.convert_tokens_to_ids(mask_candidate)
-            # if candidate_id != tokenizer.unk_token_id:  # 未知トークンIDではない場合
-            mask_token_ids[mask_candidate] = candidate_id
-            print(f"{tokenizer.unk_token_id=}")
-            print(f"マスクトークン候補 '{mask_candidate}' のID: {candidate_id}")
+        # # マスクトークン候補のIDを取得
+        # for mask_candidate in mask_token_candidates:
+        #     candidate_id = tokenizer.convert_tokens_to_ids(mask_candidate)
+        #     # if candidate_id != tokenizer.unk_token_id:  # 未知トークンIDではない場合
+        #     mask_token_ids[mask_candidate] = candidate_id
+        #     print(f"{tokenizer.unk_token_id=}")
+        #     print(f"マスクトークン候補 '{mask_candidate}' のID: {candidate_id}")
 
         
-        # 既存のマスクトークン属性を確認
-        has_mask_token = hasattr(tokenizer, 'mask_token') and tokenizer.mask_token is not None
-        if has_mask_token:
-            print(f"既存のマスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+        # # 既存のマスクトークン属性を確認
+        # has_mask_token = hasattr(tokenizer, 'mask_token') and tokenizer.mask_token is not None
+        # if has_mask_token:
+        #     print(f"既存のマスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
         
         # # マスクトークンの設定
         # if not has_mask_token:
