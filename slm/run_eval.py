@@ -200,7 +200,7 @@ def load_model(
 
 def prepare_environment(
     data_path: str = "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
-    model_path: str = "/content/drive/MyDrive/slm/models/wave_network",
+    model_path: str = "/content/drive/MyDrive/slm_outputs/slm_1024h_3l/checkpoints/diffusion_step_150.pt",
     target_path: str = "/content/fast_data/"
 ) -> Dict[str, Any]:
     """
