@@ -21,6 +21,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 import numpy as np
 import torch.nn.functional as F
 from tqdm import tqdm
+import pyarrow as pa  # Arrowファイル読み込み用
 
 
 def copy_data_to_fast_storage(
@@ -353,6 +354,64 @@ def prepare_environment(
     return result
 
 
+def load_arrow_data(
+    arrow_path: str, 
+    limit: int = 100
+) -> list:
+    """
+    Arrowファイルからデータを読み込みます。
+    
+    Args:
+        arrow_path: Arrowファイルのパス
+        limit: 読み込むサンプル数の上限
+        
+    Returns:
+        list: 読み込んだテキストのリスト
+    
+    How:
+        PyArrowライブラリを使用してArrowファイルを読み込み、
+        テキストデータを抽出します。
+    """
+    print(f"Arrowファイルを読み込んでいます: {arrow_path}")
+    try:
+        # Arrowファイルを開く
+        reader = pa.ipc.open_file(arrow_path)
+        table = reader.read_all()
+        
+        # テキストカラムを取得（通常は'text'という名前）
+        text_column = None
+        for col_name in table.column_names:
+            if col_name.lower() == 'text' or 'content' in col_name.lower():
+                text_column = col_name
+                break
+        
+        if text_column is None:
+            # カラム名がテキストを表していそうなものを探す
+            print(f"利用可能なカラム: {table.column_names}")
+            if len(table.column_names) > 0:
+                text_column = table.column_names[0]  # 最初のカラムを使用
+                print(f"最初のカラム '{text_column}' をテキストとして使用します")
+            else:
+                raise ValueError("テキストカラムが見つかりません")
+        
+        # テキストデータを取得
+        texts = table[text_column].to_pylist()
+        print(f"{len(texts)} サンプルを読み込みました")
+        
+        # サンプル数を制限
+        if limit and limit < len(texts):
+            texts = texts[:limit]
+            print(f"サンプル数を {limit} に制限しました")
+        
+        return texts
+    
+    except Exception as e:
+        print(f"Arrowファイルの読み込み中にエラーが発生しました: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
 def evaluate_model(
     model: Any,
     tokenizer: PreTrainedTokenizer,
@@ -441,8 +500,26 @@ def evaluate_model(
     if test_data is not None:
         try:
             print("\n=== パープレキシティ評価 ===")
-            # テストデータのロード
-            import json
+            print(f"テストデータパス: {test_data}")
+            
+            # ファイル形式に応じたデータ読み込み処理
+            test_texts = []
+            if test_data.endswith('.arrow'):
+                # Arrowファイルからデータを読み込み
+                test_texts = load_arrow_data(test_data, limit=100)
+            elif test_data.endswith('.jsonl'):
+                # JSONLファイルからデータを読み込み
+                import json
+                with open(test_data, "r", encoding="utf-8") as f:
+                    test_texts = [json.loads(line)["text"] for line in f][:100]
+            else:
+                # テキストファイルとして処理
+                with open(test_data, "r", encoding="utf-8") as f:
+                    test_texts = [line.strip() for line in f][:100]
+            
+            print(f"テストデータを{len(test_texts)}サンプルロードしました")
+            
+            # データの前処理
             from torch.utils.data import Dataset, DataLoader
             
             class SimpleDataset(Dataset):
@@ -466,13 +543,13 @@ def evaluate_model(
                 def __getitem__(self, idx):
                     return self.examples[idx]
             
-            # テストデータのロードと準備
-            with open(test_data, "r", encoding="utf-8") as f:
-                test_texts = [json.loads(line)["text"] for line in f][:100]  # 最初の100サンプルのみ使用
-            
-            print(f"テストデータを{len(test_texts)}サンプルロードしました")
+            # データセットとデータローダーの作成
             test_dataset = SimpleDataset(test_texts, tokenizer, max_length)
-            test_dataloader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=collator)
+            test_dataloader = DataLoader(
+                test_dataset, 
+                batch_size=batch_size, 
+                collate_fn=collator
+            )
             
             # パープレキシティ計算
             total_loss = 0.0
@@ -582,13 +659,19 @@ if __name__ == "__main__":
         if env.get("model") is not None and env.get("tokenizer") is not None:
             print("\n=== モデル評価を開始します ===")
             
-            # テストデータのパス (存在する場合)
-            test_data_path = os.path.join(env.get("data_path", ""), "validation.jsonl")
-            test_data = test_data_path if os.path.exists(test_data_path) else None
+            # テストデータのパス（Arrow形式ファイル）
+            arrow_path = os.path.join(env.get("data_path", ""), "test/data-00000-of-00001.arrow")
+            test_data = arrow_path if os.path.exists(arrow_path) else None
+            
+            # Arrow形式が見つからない場合はJSONLファイルを探す
+            if not test_data:
+                jsonl_path = os.path.join(env.get("data_path", ""), "validation.jsonl")
+                test_data = jsonl_path if os.path.exists(jsonl_path) else None
             
             if not test_data:
-                print(f"テストデータが見つかりません: {test_data_path}")
-                print("サンプル生成のみで評価を行います。")
+                print("テストデータが見つかりません。サンプル生成のみで評価を行います。")
+            else:
+                print(f"テストデータが見つかりました: {test_data}")
             
             # 評価の実行
             eval_results = evaluate_model(
