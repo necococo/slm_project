@@ -81,25 +81,42 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> tu
     """
     print(f"チェックポイント {checkpoint_path} からモデルを読み込み中...")
     
+    # PyTorch 2.6+対応: 必要なクラスを安全なグローバルとして明示的に登録
     try:
-        # PyTorch公式ドキュメント: torch.loadはweights_onlyパラメータを受け入れる
-        # https://pytorch.org/docs/stable/generated/torch.load.html
-        # map_location="cpu" でCPUにロードし、メモリ使用量を減らす
+        import torch.serialization
+        from slm.config import ModelConfig, TrainingConfig
+        
+        # ModelConfigとTrainingConfigを安全なグローバルとして登録
+        torch.serialization.add_safe_globals([ModelConfig, TrainingConfig])
+        
+        # T5Tokenizerも安全なグローバルとして登録（T5Tokenizerはチェックポイントに含まれている場合がある）
         try:
+            from transformers.models.t5.tokenization_t5 import T5Tokenizer
+            torch.serialization.add_safe_globals([T5Tokenizer])
+        except ImportError:
+            pass  # transformersがインストールされていない場合は無視
+            
+        # トランスフォーマーの他の可能性のあるクラスも登録
+        try:
+            from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+            torch.serialization.add_safe_globals([PreTrainedTokenizerBase])
+        except ImportError:
+            pass
+            
+        print("PyTorch 2.6+用の安全なグローバル登録が完了しました")
+    except (ImportError, AttributeError) as e:
+        # 古いPyTorchバージョンでは無視
+        print(f"PyTorch 2.6+の機能が見つかりません。通常のロード方式を使用します: {e}")
+    
+    try:
+        # まず weights_only=False で試行（PyTorch 2.6+ではデフォルトでTrue）
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            print("weights_only=False でチェックポイントを読み込みました")
+        except (TypeError, AttributeError):
+            # 古いPyTorchバージョンではweights_onlyがない
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        except Exception as e1:
-            print(f"通常のロード方法で失敗: {e1}")
-            print("代替のロード方法を試みます...")
-            try:
-                # pickle_module=None, **pickle_load_args を指定する方法を試す
-                checkpoint = torch.load(checkpoint_path, map_location="cpu", 
-                                       pickle_module=None)
-            except Exception as e2:
-                print(f"代替ロード方法でも失敗: {e2}")
-                # 最後の手段: pickle_module=pickle を使用
-                import pickle
-                checkpoint = torch.load(checkpoint_path, map_location="cpu", 
-                                       pickle_module=pickle)
+            print("標準モードでチェックポイントを読み込みました")
         
     except Exception as e:
         print(f"チェックポイントの読み込みエラー: {e}")
@@ -123,8 +140,50 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> tu
     # モデル設定を取得
     if "model_config" not in checkpoint:
         raise ValueError(f"チェックポイントにmodel_configが見つかりません: {checkpoint_path}")
-        
+    
+    # チェックポイントのマップを検証
     model_config = checkpoint["model_config"]
+    
+    # ModelConfigの属性を検証し、必要に応じて修復
+    # PyTorch 2.6+でのセキュリティ強化により内部属性が変更されている可能性がある
+    if not hasattr(model_config, 'hidden_size') and hasattr(model_config, '_hidden_size'):
+        # _属性から通常属性に変換
+        for attr_name in dir(model_config):
+            if attr_name.startswith('_') and not attr_name.startswith('__'):
+                # プライベート属性名（_で始まる）から公開属性名に変換
+                public_name = attr_name[1:] # _をスキップ
+                if not hasattr(model_config, public_name):
+                    # 公開属性を作成
+                    value = getattr(model_config, attr_name)
+                    setattr(model_config, public_name, value)
+                    print(f"属性を修復: {attr_name} → {public_name}")
+    
+    # 最終検証
+    if not hasattr(model_config, 'hidden_size'):
+        # モデル設定のデバッグ情報を表示
+        print(f"警告: モデル設定に 'hidden_size' 属性が見つかりません")
+        print(f"利用可能な属性: {dir(model_config)}")
+        
+        # 新しいModelConfigオブジェクトを作成
+        from slm.config import ModelConfig
+        fixed_config = ModelConfig(
+            hidden_size=1024,
+            num_layers=12,
+            vocab_size=32000,
+            max_seq_len=512
+        )
+        
+        # 可能な限り元の設定から値をコピー
+        for attr in ['hidden_size', 'num_layers', 'vocab_size', 'max_seq_len', 
+                     'dropout_prob', 'use_rope', 'use_wavelet', 'wavelet_name',
+                     'activation', 'use_bio_noise', 'noise_std']:
+            if hasattr(model_config, attr):
+                setattr(fixed_config, attr, getattr(model_config, attr))
+                
+        # 修正された設定を使用
+        model_config = fixed_config
+        print("モデル設定を修復しました")
+            
     print(f"モデル設定: hidden_size={model_config.hidden_size}, num_layers={model_config.num_layers}, vocab_size={model_config.vocab_size}")
     
     # モデルの初期化
@@ -151,6 +210,7 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> tu
         tokenizer_name = None
         if hasattr(model_config, "tokenizer") and hasattr(model_config.tokenizer, "name_or_path"):
             tokenizer_name = model_config.tokenizer.name_or_path
+            print(f"チェックポイントからトークナイザー名を取得: {tokenizer_name}")
         
         # トークナイザー名からトークナイザーを直接ロード
         if tokenizer_name:
@@ -159,9 +219,21 @@ def load_model_from_checkpoint(checkpoint_path: str, device: str = "cuda") -> tu
             tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
             print(f"トークナイザーのロードに成功しました")
         else:
-            print("モデル設定からトークナイザー情報が取得できませんでした")
+            # tokenizer属性から直接トークナイザーオブジェクトを取得
+            if hasattr(model_config, "tokenizer") and model_config.tokenizer is not None:
+                try:
+                    # トークナイザーオブジェクトが直接保存されていた場合
+                    tokenizer = model_config.tokenizer
+                    print(f"モデル設定から直接トークナイザーを取得しました")
+                except Exception as e:
+                    print(f"トークナイザー取得エラー: {e}")
+            else:
+                print("モデル設定からトークナイザー情報が取得できませんでした")
     except Exception as e:
         print(f"トークナイザーのロードエラー: {e}")
+        
+    # トークナイザーが取得できなかった場合はデフォルトトークナイザーを使用
+    if tokenizer is None:
         print("デフォルトの日本語トークナイザーをロードします")
         try:
             from transformers import AutoTokenizer
