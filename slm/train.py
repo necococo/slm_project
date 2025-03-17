@@ -285,19 +285,21 @@ class Trainer:
             return
 
         vocab_size = self.model.get_classifier_weights().size(0)
-        # マスクトークンIDをトークナイザーから取得
+        # マスクトークンIDをトークナイザーから取得（初期値は4）
         mask_token_id = 4  # デフォルト値
         if hasattr(self.model.config, 'tokenizer') and self.model.config.tokenizer is not None:
             if hasattr(self.model.config.tokenizer, 'mask_token_id'):
                 mask_token_id = self.model.config.tokenizer.mask_token_id
         
-        # 重要: マスクトークンIDのチェックと警告
+        # 重要: マスクトークンIDが語彙サイズを超えていないか確認
         if mask_token_id >= vocab_size:
             print(f"警告: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています。")
-            print(f"既存モデルとの互換性を維持するため、vocab_sizeを {vocab_size} から {mask_token_id + 1} に拡張します。")
-            print(f"注意: モデル初期化時にvocab_sizeの調整が必要です。チェックポイントからの再開時にエラーが発生する可能性があります。")
-            # この時点ではモデル出力層サイズの変更はできないため、警告を表示するのみ
-            # 実際に問題が発生すればエラーハンドリングで処理
+            print(f"マスクトークンIDを語彙サイズ-1 ({vocab_size-1}) に調整します。")
+            mask_token_id = vocab_size - 1
+            # トークナイザーの設定も更新（可能な場合）
+            if hasattr(self.model.config, 'tokenizer') and self.model.config.tokenizer is not None:
+                if hasattr(self.model.config.tokenizer, 'mask_token_id'):
+                    self.model.config.tokenizer.mask_token_id = mask_token_id
         
         # diffuserもacceleratorで準備
         diffuser = SimpleTextDiffusion(
@@ -681,23 +683,25 @@ class Trainer:
             # 語彙サイズを取得
             vocab_size = self.model.get_classifier_weights().size(0)
             
-            # マスクトークンIDをチェック - トークナイザーから取得
+            # マスクトークンIDをチェック
             mask_token_id = 4  # デフォルト値
             if tokenizer is not None and hasattr(tokenizer, 'mask_token_id'):
                 mask_token_id = tokenizer.mask_token_id
                 
-                # マスクトークンIDが語彙サイズを超えていることは警告のみで、変更しない
-                # (既存モデルとの互換性のため)
+                # マスクトークンIDが語彙サイズを超えていないか確認
                 if mask_token_id >= vocab_size:
-                    print(f"検証中: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています")
-                    print(f"既存モデルとの互換性を維持するため、マスクトークンIDはそのまま使用します")
+                    print(f"警告: マスクトークンID ({mask_token_id}) が語彙サイズ ({vocab_size}) を超えています。")
+                    print(f"マスクトークンIDを語彙サイズ-1 ({vocab_size-1}) に調整します。")
+                    mask_token_id = vocab_size - 1
+                    # トークナイザーの設定も更新
+                    tokenizer.mask_token_id = mask_token_id
             
             collator = CustomCollator(
                 tokenizer=tokenizer,
                 model_config=self.model.config,
                 mlm=True,
                 mlm_probability=self.training_config.mlm_probability,
-                mask_token_id=mask_token_id,  # そのまま使用
+                mask_token_id=mask_token_id,
                 qa=False
             )
             
@@ -915,7 +919,7 @@ class Trainer:
                                 try:
                                     if isinstance(v, torch.Tensor):
                                         # device-side assertが発生する可能性があるテンソルをスキップ
-                                        if v.requires_grad and v.gradはNone and torch.isnan(v.grad).any():
+                                        if v.requires_grad and v.grad is not None and torch.isnan(v.grad).any():
                                             print(f"警告: パラメータ {k} に不正な勾配があります。スキップします。")
                                             continue
                                         model_state_dict[k] = v.detach().cpu()
@@ -1030,6 +1034,10 @@ class Trainer:
             
         Returns:
             tuple[int, int]: (start_epoch, start_step) - 次のエポック番号とステップ数
+        
+        PyTorch 2.6+対応:
+        - weights_only=Falseを明示的に指定してクラス情報も含めて読み込む
+        - または、add_safe_globalsを使用して許可リストに追加
         """
         # PyTorch 2.6+対応: 必要なクラスを安全なグローバルとして登録
         from slm.config import ModelConfig, TrainingConfig
@@ -1064,19 +1072,7 @@ class Trainer:
         # まずAcceleratorからオリジナルモデルを取得
         unwrapped_model = self.accelerator.unwrap_model(self.model)
         
-        # チェックポイントの情報を確認
-        if self.accelerator.is_main_process:
-            # チェックポイントとモデルの語彙サイズを確認
-            if "model_config" in checkpoint:
-                checkpoint_vocab_size = checkpoint["model_config"].vocab_size
-                model_vocab_size = unwrapped_model.config.vocab_size
-                
-                if checkpoint_vocab_size != model_vocab_size:
-                    print(f"警告: チェックポイント語彙サイズ ({checkpoint_vocab_size}) と"
-                          f"モデル語彙サイズ ({model_vocab_size}) が異なります")
-                    print("拡張された load_state_dict メソッドで調整されます")
-        
-        # 状態辞書をロード - 拡張されたload_state_dictメソッドが自動的にサイズ調整を行う
+        # 状態辞書をロード
         try:
             unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
         except Exception as e:
@@ -1111,7 +1107,7 @@ class Trainer:
             print(f"次のエポック: {start_epoch + 1}, 開始ステップ: {start_step}")
         
         # 全プロセスが同期するのを待つ
-        self.accelerator.wait_for_everyone()
+        self.accelerator.wait_forEveryone()
         
         # エポック番号とステップ数のタプルを返す
         return start_epoch, start_step
@@ -1125,4 +1121,4 @@ class Trainer:
             print("TensorBoard writer closed and resources released")
             
         # 全プロセスが同期するのを待つ
-        self.accelerator.wait_for_everyone()
+        self.accelerator.wait_forEveryone()
