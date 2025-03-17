@@ -22,10 +22,30 @@ from torch.utils.data import DataLoader, Dataset
 from cut_cross_entropy import linear_cross_entropy
 from slm.modules.wave_network import WaveNetworkLM
 
-import evaluate
+# インポートを変更：evaluateではなくtorchmetricsなど他の評価ライブラリを使用
+# または必要なメトリクスを直接実装
+from nltk.translate.bleu_score import corpus_bleu
+from rouge_score import rouge_scorer
 
-bleu_metric = evaluate.load("bleu")
-rouge_metric = evaluate.load("rouge")
+# 既存のevaluateモジュールのインポートを削除
+# import evaluate
+# bleu_metric = evaluate.load("bleu")
+# rouge_metric = evaluate.load("rouge")
+
+# BLEU計算のためのNLTKをインポート
+try:
+    import nltk
+    nltk.download('punkt', quiet=True)
+except ImportError:
+    print("nltk がインストールされていません。pip install nltk でインストールしてください")
+    pass
+
+# ROUGE計算のためのrouge_scoreをインポート
+try:
+    from rouge_score import rouge_scorer
+except ImportError:
+    print("rouge_score がインストールされていません。pip install rouge_score でインストールしてください")
+    pass
 
 
 def evaluate_perplexity(
@@ -116,7 +136,7 @@ def evaluate_bleu(
         for batch in dataloader:
             input_ids = batch["input_ids"].to(device)
             # 参照文
-            references = [[ref_str.split()] for ref_str in batch["target_text"]]
+            references = [ref_str.split() for ref_str in batch["target_text"]]
 
             outputs = []
             for i in range(input_ids.size(0)):
@@ -140,14 +160,17 @@ def evaluate_bleu(
             # BLEU用に単語列にsplit
             hypotheses = [out_str.split() for out_str in outputs]
 
-            all_references.extend(references)
+            all_references.extend([[ref] for ref in references])  # NLTKのcorpus_bleuは参照文のリストのリストを期待
             all_hypotheses.extend(hypotheses)
 
-    results = bleu_metric.compute(
-        predictions=all_hypotheses,
-        references=all_references
-    )
-    return results["bleu"]
+    # nltk.translate.bleu_scoreを使用してBLEUを計算
+    try:
+        bleu_score = corpus_bleu(all_references, all_hypotheses)
+    except Exception as e:
+        print(f"BLEU計算エラー: {e}")
+        bleu_score = 0.0
+    
+    return bleu_score
 
 
 def evaluate_rouge(
@@ -204,11 +227,32 @@ def evaluate_rouge(
             predictions.extend(gen_texts)
             references.extend(ref_texts)
 
-    results = rouge_metric.compute(
-        predictions=predictions,
-        references=references
-    )
-    return results
+    # rouge_scoreを使用してROUGEメトリクスを計算
+    try:
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        scores = {
+            'rouge1': 0.0, 
+            'rouge2': 0.0, 
+            'rougeL': 0.0
+        }
+        
+        for pred, ref in zip(predictions, references):
+            score = scorer.score(ref, pred)
+            for key in scores:
+                scores[key] += score[key].fmeasure
+        
+        # 平均を計算
+        for key in scores:
+            scores[key] /= max(len(predictions), 1)
+    except Exception as e:
+        print(f"ROUGE計算エラー: {e}")
+        scores = {
+            'rouge1': 0.0,
+            'rouge2': 0.0,
+            'rougeL': 0.0
+        }
+    
+    return scores
 
 
 def temperature_sampling_decode(
