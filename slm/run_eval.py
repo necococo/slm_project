@@ -34,24 +34,34 @@ def copy_data_to_fast_storage(
     Returns:
         str: コピー先の完全なパス
     """    
+    # ソースパスがファイルの場合とディレクトリの場合で処理を分ける
+    # Why not: ファイルとディレクトリで異なるコピー処理が必要なため
+    source = Path(source_path)
+    if not source.exists():
+        raise FileNotFoundError(f"コピー元のパスが見つかりません: {source_path}")
+    
     # ターゲットディレクトリが存在しない場合は作成
     target_dir = Path(target_path)
     target_dir.mkdir(parents=True, exist_ok=True)
     
-    # コピー先のフルパス
-    full_target_path = target_dir / Path(source_path).name
-    
-    # コピー元が存在するか確認
-    if not Path(source_path).exists():
-        raise FileNotFoundError(f"コピー元のパスが見つかりません: {source_path}")
-    
-    # すでにコピー先にデータがある場合はスキップするオプションを提供
-    if full_target_path.exists():
-        print(f"コピー先にデータがすでに存在します: {full_target_path}")
-        return str(full_target_path)
+    # ソースがファイルかディレクトリかによって処理を分ける
+    if source.is_file():
+        # ファイルの場合
+        target_file = target_dir / source.name
+        if target_file.exists():
+            print(f"コピー先にファイルがすでに存在します: {target_file}")
+        else:
+            shutil.copy2(source, target_file)
+            print(f"ファイルをコピーしました: {source} -> {target_file}")
+        return str(target_file)
     else:
-        shutil.copytree(source_path, full_target_path)
-        print(f"データをコピーしました: {source_path} -> {full_target_path}")
+        # ディレクトリの場合
+        full_target_path = target_dir / source.name
+        if full_target_path.exists():
+            print(f"コピー先にディレクトリがすでに存在します: {full_target_path}")
+        else:
+            shutil.copytree(source, full_target_path)
+            print(f"ディレクトリをコピーしました: {source} -> {full_target_path}")
         return str(full_target_path)
 
 
@@ -115,87 +125,64 @@ def load_tokenizer(
 def load_model(
     model_path: str,
     device: Optional[torch.device] = None
-) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
+) -> Optional[Any]:
     """
     学習済みモデルを読み込みます。
     
     Args:
-        model_path: モデルが保存されているパス
+        model_path: モデル重みファイルのパス
         device: モデルをロードするデバイス
         
     Returns:
-        Tuple[Optional[Any], Optional[Dict[str, Any]]]: (モデル, モデル設定)のタプル
+        Optional[Any]: ロードされたモデル
     
     How:
-        - モデルの重みを直接PyTorchの形式で読み込む
-        - モデル設定ファイルも読み込んで返す
+        指定されたパスから直接モデルの重みをロードし、
+        デフォルト設定でWaveNetworkモデルを初期化します。
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    model_path = Path(model_path)
-    
-    if not model_path.exists():
-        print(f"モデルのパスが見つかりません: {model_path}")
-        return None, None
+    # モデルパスの確認
+    model_file = Path(model_path)
+    if not model_file.exists() or not model_file.is_file():
+        print(f"モデルファイルが見つかりません: {model_path}")
+        return None
     
     try:
-        print(f"モデルをロードしています: {model_path}")
-        
-        # モデル設定ファイルの読み込み
-        config_path = model_path / "config.pth"
-        if config_path.exists():
-            config = torch.load(str(config_path), map_location="cpu")
-            print(f"モデル設定をロードしました")
-        else:
-            print(f"モデル設定ファイルが見つかりません: {config_path}")
-            config = None
-        
-        # モデル重みの読み込み
-        model_files = list(model_path.glob("*.pth"))
-        model_files = [f for f in model_files if f.name != "config.pth"]
-        
-        if not model_files:
-            print(f"モデル重みファイルが見つかりません: {model_path}")
-            return None, config
-        
-        # 最新のモデルをロード（複数ある場合）
-        model_file = sorted(model_files, key=lambda f: f.stat().st_mtime, reverse=True)[0]
+        print(f"モデル重みをロードしています: {model_file}")
         
         # WaveNetworkモデルをインポートして初期化
-        try:
-            from slm.modules.wave_network import WaveNetworkLM
-            
-            if config is not None:
-                # 設定からモデルを初期化
-                model = WaveNetworkLM(config)
-                print(f"設定からWaveNetworkモデルを初期化しました")
-            else:
-                print("警告: 設定ファイルがないため、デフォルト設定でモデルを初期化します")
-                # デフォルト設定でモデルを初期化（必要に応じてパラメータを調整）
-                model = WaveNetworkLM()
-            
-            # 重みの読み込み
-            state_dict = torch.load(str(model_file), map_location="cpu")
-            model.load_state_dict(state_dict)
-            print(f"モデル重みをロードしました: {model_file.name}")
-            
-            # デバイスに転送
-            model.to(device)
-            model.eval()  # 評価モードに設定
-            
-            return model, config
-            
-        except ImportError:
-            print("WaveNetworkモデルをインポートできませんでした。slm.modules.wave_networkが利用可能か確認してください。")
-            return None, config
-        except Exception as e:
-            print(f"モデルのロード中にエラーが発生しました: {str(e)}")
-            return None, config
-    
+        from slm.modules.wave_network import WaveNetworkLM
+        
+        # 固定パラメータでモデルを初期化
+        model = WaveNetworkLM(
+            vocab_size=32100,  # トークナイザーの語彙サイズに合わせる
+            embedding_dim=1024,
+            complex_dim=512,
+            num_layers=3,
+        )
+        
+        # 重みの読み込み
+        state_dict = torch.load(str(model_file), map_location="cpu")
+        
+        # state_dictのキーにprefixがある場合は削除
+        if all(k.startswith('module.') for k in state_dict.keys()):
+            state_dict = {k[7:]: v for k, v in state_dict.items()}
+        
+        # 重みを読み込む (strict=Falseでキーの不一致を許容)
+        model.load_state_dict(state_dict, strict=False)
+        print(f"モデル重みをロードしました")
+        
+        # デバイスに転送
+        model.to(device)
+        model.eval()  # 評価モードに設定
+        
+        return model
+        
     except Exception as e:
-        print(f"モデルのロード処理でエラーが発生しました: {str(e)}")
-        return None, None
+        print(f"モデルのロード中にエラーが発生しました: {str(e)}")
+        return None
 
 
 def prepare_environment(
@@ -208,7 +195,7 @@ def prepare_environment(
     
     Args:
         data_path: データのパス
-        model_path: モデルのパス
+        model_path: モデル重みファイルのパス
         target_path: コピー先のパス
         
     Returns:
@@ -235,9 +222,8 @@ def prepare_environment(
     result["model_path"] = copied_model_path
     
     # モデルをロード
-    model, config = load_model(copied_model_path, device)
+    model = load_model(copied_model_path, device)
     result["model"] = model
-    result["model_config"] = config
     
     return result
 
@@ -256,15 +242,11 @@ if __name__ == "__main__":
         # モデル情報の表示
         if env.get('model') is not None:
             model = env.get('model')
-            config = env.get('model_config', {})
-            
             print("\n=== モデル情報 ===")
             print(f"モデルタイプ: {type(model).__name__}")
             
             if hasattr(model, "embedding_dim"):
                 print(f"埋め込み次元: {model.embedding_dim}")
-            elif config and "embedding_dim" in config:
-                print(f"埋め込み次元: {config['embedding_dim']}")
             
             # パラメータ数のカウント
             total_params = sum(p.numel() for p in model.parameters())
