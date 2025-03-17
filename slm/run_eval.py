@@ -4,7 +4,7 @@
 """
 How:
     評価用のスクリプト。Googleドライブからデータを高速アクセス可能な
-    ローカルディレクトリにコピーします。
+    ローカルディレクトリにコピーし、トークナイザーをロードします。
 
 Why not:
     Googleドライブは直接アクセスすると遅いため、高速なローカルストレージに
@@ -15,13 +15,19 @@ import os
 import shutil
 from pathlib import Path
 import time
-from typing import Optional
+from typing import Optional, Union, Dict, Any
+
+# トークナイザーのロードに必要なインポート
+try:
+    from transformers import AutoTokenizer, PreTrainedTokenizer
+except ImportError:
+    print("transformersがインストールされていません。pip install transformers でインストールしてください。")
 
 
 def copy_data_to_fast_storage(
     source_path: str = "/content/drive/MyDrive/slm/data/fujiki/wiki40b_ja",
     target_path: str = "/content/fast_data/",
-) -> None:
+) -> str:
     """
     Googleドライブからローカルの高速ストレージにデータをコピーします。
 
@@ -30,11 +36,8 @@ def copy_data_to_fast_storage(
         target_path: コピー先のパス
     
     Returns:
-        None
-    """
-    # 開始時間を記録
-    start_time = time.time()
-    
+        str: コピー先の完全なパス
+    """    
     # ターゲットディレクトリが存在しない場合は作成
     target_dir = Path(target_path)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -49,15 +52,101 @@ def copy_data_to_fast_storage(
     # すでにコピー先にデータがある場合はスキップするオプションを提供
     if full_target_path.exists():
         print(f"コピー先にデータがすでに存在します: {full_target_path}")
-        return
+        return str(full_target_path)
     else:
         shutil.copytree(source_path, full_target_path)
-        print(f"データをコピーしました: {source_path} -> {full_target_path}")        
+        print(f"データをコピーしました: {source_path} -> {full_target_path}")
+        return str(full_target_path)
 
+
+def load_tokenizer(
+    tokenizer_path: str,
+    use_fast: bool = True,
+) -> Optional[PreTrainedTokenizer]:
+    """
+    トークナイザーをロードします。
+    
+    Args:
+        tokenizer_path: トークナイザーが保存されているパス
+        use_fast: 高速バージョンを使用するかどうか
+        
+    Returns:
+        Optional[PreTrainedTokenizer]: ロードされたトークナイザーのインスタンス
+    
+    Why not:
+        直接パスを指定することで、様々なディレクトリ構造に対応できるようにしています。
+        エラー処理を組み込むことで、トークナイザーが見つからない場合でも安全に処理を継続します。
+    """
+    if "AutoTokenizer" not in globals():
+        print("transformersライブラリがインポートされていません。")
+        return None
+    
+    tokenizer_path = Path(tokenizer_path)
+    
+    if not tokenizer_path.exists():
+        print(f"トークナイザーのパスが見つかりません: {tokenizer_path}")
+        return None
+    
+    try:
+        print(f"トークナイザーをロードしています: {tokenizer_path}")
+        
+        # AutoTokenizerを使ってトークナイザーをロード
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(tokenizer_path),
+            use_fast=use_fast
+        )
+        
+        print(f"トークナイザーが正常にロードされました")
+        print(f"語彙サイズ: {len(tokenizer)}")
+        
+        # 特殊トークンの情報を表示
+        special_tokens = {
+            name: token for name, token in [
+                ("PAD", tokenizer.pad_token),
+                ("UNK", tokenizer.unk_token),
+                ("BOS", tokenizer.bos_token),
+                ("EOS", tokenizer.eos_token),
+                ("SEP", tokenizer.sep_token if hasattr(tokenizer, "sep_token") else None),
+                ("CLS", tokenizer.cls_token if hasattr(tokenizer, "cls_token") else None),
+                ("MASK", tokenizer.mask_token if hasattr(tokenizer, "mask_token") else None)
+            ] if token is not None
+        }
+        print(f"特殊トークン: {special_tokens}")
+        
+        return tokenizer
+    
+    except Exception as e:
+        print(f"トークナイザーのロード中にエラーが発生しました: {str(e)}")
+        return None
+
+
+def prepare_environment() -> Dict[str, Any]:
+    """
+    評価環境を準備します。データのコピーとトークナイザーのロードを行います。
+    
+    Returns:
+        Dict[str, Any]: 環境設定の結果情報（パスとトークナイザー）
+    """
+    result = {}
+    
+    # データをコピー
+    data_path = copy_data_to_fast_storage()
+    result["data_path"] = data_path
+    
+    # トークナイザーをロード
+    tokenizer_path = os.path.join(data_path, "tokenizers")
+    tokenizer = load_tokenizer(tokenizer_path)
+    result["tokenizer"] = tokenizer
+    
+    return result
 
 
 if __name__ == "__main__":
     try:
-        copy_data_to_fast_storage()
+        # 評価環境を準備
+        env = prepare_environment()
+        print("\n評価環境の準備が完了しました。")
+        print(f"データパス: {env.get('data_path', 'N/A')}")
+        print(f"トークナイザー: {'ロード成功' if env.get('tokenizer') is not None else 'ロード失敗'}")
     except Exception as e:
         print(f"スクリプト実行中にエラーが発生しました: {str(e)}")
