@@ -137,8 +137,8 @@ def load_model(
         Optional[Any]: ロードされたモデル
     
     How:
-        指定されたパスから直接モデルの重みをロードし、
-        デフォルト設定でWaveNetworkモデルを初期化します。
+        モデル重みをロードし、シンプルなデフォルト設定で
+        WaveNetworkモデルを初期化します。
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -152,27 +152,19 @@ def load_model(
     try:
         print(f"モデル重みをロードしています: {model_file}")
         
+        # 重みをロード (weights_only=Falseでモデル全体をロード)
+        checkpoint = torch.load(str(model_file), map_location="cpu", weights_only=False)
+        
         # WaveNetworkモデルをインポートして初期化
         from slm.modules.wave_network import WaveNetworkLM
         
-        # 固定パラメータでモデルを初期化
-        model = WaveNetworkLM(
-            vocab_size=32100,  # トークナイザーの語彙サイズに合わせる
-            embedding_dim=1024,
-            complex_dim=512,
-            num_layers=3,
-        )
+        # デフォルトパラメータでモデル初期化
+        model = WaveNetworkLM()
+        print("モデルを初期化しました")
         
-        # 重みの読み込み
-        state_dict = torch.load(str(model_file), map_location="cpu")
-        
-        # state_dictのキーにprefixがある場合は削除
-        if all(k.startswith('module.') for k in state_dict.keys()):
-            state_dict = {k[7:]: v for k, v in state_dict.items()}
-        
-        # 重みを読み込む (strict=Falseでキーの不一致を許容)
-        model.load_state_dict(state_dict, strict=False)
-        print(f"モデル重みをロードしました")
+        # 重みを読み込む
+        model.load_state_dict(checkpoint, strict=False)
+        print("モデル重みをロードしました")
         
         # デバイスに転送
         model.to(device)
