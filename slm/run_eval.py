@@ -94,14 +94,43 @@ def load_tokenizer(
         print(f"トークナイザーが正常にロードされました")
         print(f"語彙サイズ: {len(tokenizer)}")
         
-        # マスクトークンが存在しない場合は追加
-        # Why not: MLMタスクなどではマスクトークンが必須なため、
-        # 明示的に追加して後続処理での問題を防止します
-        if not hasattr(tokenizer, 'mask_token') or tokenizer.mask_token is None:
-            tokenizer.add_special_tokens({'mask_token': '<mask>'})
-            print(f"マスクトークン '<mask>' を追加しました。マスクトークンID: {tokenizer.mask_token_id}")
-        else:
-            print(f"マスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+        # マスクトークンの検出と設定
+        # Why not: 異なるトークナイザーでは <mask> や [MASK] など様々な表記があるため
+        # 複数の候補を試して適切なマスクトークンを検出する
+        mask_token_candidates = ['<mask>', '[MASK]']
+        mask_token_ids = {}
+        
+        # マスクトークン候補のIDを取得
+        for mask_candidate in mask_token_candidates:
+            candidate_id = tokenizer.convert_tokens_to_ids(mask_candidate)
+            if candidate_id != tokenizer.unk_token_id:  # 未知トークンIDではない場合
+                mask_token_ids[mask_candidate] = candidate_id
+                print(f"マスクトークン候補 '{mask_candidate}' のID: {candidate_id}")
+        
+        # 既存のマスクトークン属性を確認
+        has_mask_token = hasattr(tokenizer, 'mask_token') and tokenizer.mask_token is not None
+        if has_mask_token:
+            print(f"既存のマスクトークン: {tokenizer.mask_token} (ID: {tokenizer.mask_token_id})")
+        
+        # マスクトークンの設定
+        if not has_mask_token:
+            if mask_token_ids:
+                # 最初に見つかった有効なマスクトークンを使用
+                best_mask, best_id = next(iter(mask_token_ids.items()))
+                tokenizer.add_special_tokens({'mask_token': best_mask})
+                print(f"マスクトークン '{best_mask}' を設定しました。ID: {tokenizer.mask_token_id}")
+            else:
+                # マスクトークン候補が見つからない場合、新しく追加
+                tokenizer.add_special_tokens({'mask_token': '<mask>'})
+                print(f"マスクトークン '<mask>' を追加しました。ID: {tokenizer.mask_token_id}")
+                print("注意: 新しく追加されたトークンのため、モデルの埋め込み層の拡張が必要になる場合があります")
+        
+        # 動作確認 - マスクトークンをテスト
+        for test_text in ["<mask> かもしれない", "[MASK] かもしれない"]:
+            encoded = tokenizer.encode(test_text, add_special_tokens=False)
+            decoded = tokenizer.decode(encoded)
+            is_mask = encoded[0] == tokenizer.mask_token_id
+            print(f"「{test_text}」→ ID: {encoded[0]} {'✓' if is_mask else '✗'} → 「{decoded}」")
         
         # 特殊トークンの情報を表示
         if hasattr(tokenizer, 'special_tokens_map'):
