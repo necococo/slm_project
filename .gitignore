@@ -19,3 +19,4 @@ requirements.txt
 wiki40b_ja_diffusion_training.ipynb
 *.md
 
+!README.md
