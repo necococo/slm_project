@@ -12,5 +12,10 @@ all_code_combined.txt
 copilot_code_style.md
 slm.code-workspace
 results/
+tests/
 repo2txt.py
 requirements.txt
+
+wiki40b_ja_diffusion_training.ipynb
+*.md
+
